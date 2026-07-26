@@ -1,4 +1,16 @@
 <?php
+// Pastikan session punya folder yang writable. Di sebagian hosting,
+// session.save_path bawaan server tidak ada / tidak bisa ditulis sehingga
+// login "berhasil" tapi session hilang. Cari folder pertama yang writable:
+//   1) temp sistem (di luar web root, paling aman)
+//   2) folder ./sessions di dalam aplikasi (fallback)
+foreach ([sys_get_temp_dir() . '/presensi_sessions', __DIR__ . '/sessions'] as $sessionDir) {
+    if (!is_dir($sessionDir)) { @mkdir($sessionDir, 0700, true); }
+    if (is_dir($sessionDir) && is_writable($sessionDir)) {
+        session_save_path($sessionDir);
+        break;
+    }
+}
 session_start();
 date_default_timezone_set('Asia/Jakarta');
 
@@ -27,7 +39,7 @@ date_default_timezone_set('Asia/Jakarta');
 // ---- Koneksi 1: Database Absensi ----
 define('DB_HOST', '127.0.0.1');
 define('DB_PORT', '3306');
-define('DB_NAME', 'absensi_sekolah');
+define('DB_NAME', 'presensi');
 define('DB_USER', 'root');
 define('DB_PASS', '');
 
@@ -49,8 +61,8 @@ function connectPDO(string $host, string $port, string $name, string $user, stri
     }
 }
 
-$pdo = connectPDO(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS, 'Absensi (' . DB_NAME . ')');
-$dc  = connectPDO(DC_HOST, DC_PORT, DC_NAME, DC_USER, DC_PASS, 'Datacenter (' . DC_NAME . ')');
+$pdo = connectPDO(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS, 'presensi (' . DB_NAME . ')');
+$dc  = connectPDO(DC_HOST, DC_PORT, DC_NAME, DC_USER, DC_PASS, 'datacenter_v2 (' . DC_NAME . ')');
 
 // ============================================================================
 //  Helper data master (dari datacenter, via $dc)

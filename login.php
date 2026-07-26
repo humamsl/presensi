@@ -22,10 +22,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <title>Login - Absensi Sekolah</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-<style>body{background:#1e293b;display:flex;align-items:center;min-height:100vh;}</style>
+<style>
+body{
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  /* Overlay gelap di atas gambar agar teks tetap terbaca. Ganti nama file sesuai gambar Anda. */
+  background:
+    linear-gradient(rgba(15,23,42,.75), rgba(15,23,42,.75)),
+    url('assets/img/login-bg.jpg') center/cover no-repeat fixed;
+  background-color:#1e293b; /* fallback jika gambar belum ada */
+}
+</style>
 </head>
 <body>
-<div class="container" style="max-width:400px">
+<div class="container" style="max-width:400px;max-height: 90vh; overflow-y: auto;">
   <div class="card shadow">
     <div class="card-body p-4">
       <h4 class="text-center mb-1"><i class="bi bi-fingerprint me-2"></i>Absensi Sekolah</h4>

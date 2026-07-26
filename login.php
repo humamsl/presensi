@@ -23,16 +23,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
 <style>
+@import url('https://fonts.bunny.net/css?family=plus-jakarta-sans:400,500,600,700,800');
+:root { --bs-primary:#14b8a6; --bs-primary-rgb:20,184,166; }
 body{
+  font-family:'Plus Jakarta Sans', system-ui, -apple-system, "Segoe UI", sans-serif;
   min-height:100vh;
   display:flex;
   align-items:center;
-  /* Overlay gelap di atas gambar agar teks tetap terbaca. Ganti nama file sesuai gambar Anda. */
+  /* Overlay navy (tema Datacenter/CBT) di atas gambar agar teks tetap terbaca. Ganti nama file sesuai gambar Anda. */
   background:
-    linear-gradient(rgba(15,23,42,.75), rgba(15,23,42,.75)),
+    linear-gradient(rgba(6,34,117,.78), rgba(6,34,117,.78)),
     url('assets/img/login-bg.jpg') center/cover no-repeat fixed;
-  background-color:#1e293b; /* fallback jika gambar belum ada */
+  background-color:#062275; /* fallback jika gambar belum ada */
 }
+.card{ border:0; border-radius:1rem; box-shadow:0 20px 60px -15px rgba(2,10,40,.55); }
+.card h4{ color:#062275; font-weight:700; }
+.form-control:focus{ border-color:#14b8a6; box-shadow:0 0 0 .2rem rgba(20,184,166,.2); }
+.btn-primary{
+  --bs-btn-color:#fff; --bs-btn-hover-color:#fff; --bs-btn-active-color:#fff;
+  border:0; background:linear-gradient(135deg,#14b8a6 0%,#059669 100%);
+  box-shadow:0 4px 24px -8px rgba(13,148,136,.35);
+}
+.btn-primary:hover, .btn-primary:focus, .btn-primary:active{ background:linear-gradient(135deg,#0d9488 0%,#047857 100%); }
 </style>
 </head>
 <body>
@@ -53,7 +65,6 @@ body{
         </div>
         <button class="btn btn-primary w-100">Login</button>
       </form>
-      <p class="text-muted small text-center mt-3 mb-0">Default: admin / admin123</p>
     </div>
   </div>
 </div>

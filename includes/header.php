@@ -36,32 +36,58 @@ $groups = [
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1e293b">
+<meta name="theme-color" content="#062275">
 <title><?= e($pageTitle ?? 'Absensi Sekolah') ?></title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <style>
-:root { --sb-w: 260px; --sb-bg:#1e293b; }
-body { background:#f4f6f9; }
+@import url('https://fonts.bunny.net/css?family=plus-jakarta-sans:400,500,600,700,800');
+:root {
+  --sb-w:260px; --sb-bg:#062275;                 /* navy sidebar — tema Datacenter/CBT */
+  --brand:#14b8a6; --brand-600:#0d9488; --brand-700:#0f766e;
+  --bs-primary:#14b8a6; --bs-primary-rgb:20,184,166;
+  --bs-link-color:#0d9488; --bs-link-color-rgb:13,148,136; --bs-link-hover-color:#0f766e;
+}
+body {
+  font-family:'Plus Jakarta Sans', system-ui, -apple-system, "Segoe UI", sans-serif;
+  color:#1e293b;
+  background-color:#f4fbfa;
+  background-image:
+    radial-gradient(at 0% 0%, rgba(20,184,166,.07) 0, transparent 45%),
+    radial-gradient(at 100% 0%, rgba(16,185,129,.06) 0, transparent 42%),
+    radial-gradient(at 100% 100%, rgba(56,189,248,.05) 0, transparent 45%);
+  background-attachment:fixed;
+}
+
+/* ---- Aksen teal (tombol & link) ---- */
+.btn-primary {
+  --bs-btn-color:#fff; --bs-btn-hover-color:#fff; --bs-btn-active-color:#fff;
+  border:0; background:linear-gradient(135deg,#14b8a6 0%,#059669 100%);
+  box-shadow:0 4px 24px -8px rgba(13,148,136,.35);
+}
+.btn-primary:hover, .btn-primary:focus, .btn-primary:active { background:linear-gradient(135deg,#0d9488 0%,#047857 100%); }
+.btn-outline-primary { --bs-btn-color:#0d9488; --bs-btn-border-color:#14b8a6; --bs-btn-hover-bg:#14b8a6; --bs-btn-hover-border-color:#14b8a6; --bs-btn-active-bg:#0d9488; }
+a { text-decoration:none; }
 
 /* ---- Sidebar (offcanvas di mobile, tetap di desktop) ---- */
 .sidebar { background:var(--sb-bg); --bs-offcanvas-width:var(--sb-w); border:0; }
-.sidebar .offcanvas-header { border-bottom:1px solid #334155; padding:1rem 1.25rem; }
+.sidebar .offcanvas-header { border-bottom:1px solid rgba(255,255,255,.15); padding:1rem 1.25rem; }
 .sidebar .brand-link { color:#fff; font-weight:700; font-size:1.1rem; text-decoration:none; }
 .sidebar .offcanvas-body { padding:0; overflow-y:auto; }
-.sidebar a.nav-link { color:#cbd5e1; padding:.7rem 1.25rem; font-size:.95rem; display:flex; align-items:center; }
+.sidebar a.nav-link { color:rgba(255,255,255,.82); padding:.65rem 1rem; font-size:.95rem; display:flex; align-items:center; border-radius:.6rem; margin:.12rem .6rem; transition:background .15s, color .15s; }
 .sidebar a.nav-link i { width:1.4rem; }
-.sidebar a.nav-link:hover, .sidebar a.nav-link.active { color:#fff; background:#334155; }
-.sidebar .group { color:#64748b; font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; padding:.9rem 1.25rem .3rem; }
+.sidebar a.nav-link:hover { color:#fff; background:rgba(255,255,255,.12); }
+.sidebar a.nav-link.active { color:#fff; font-weight:600; background:rgba(255,255,255,.18); box-shadow:inset 3px 0 0 rgba(255,255,255,.9); }
+.sidebar .group { color:rgba(255,255,255,.5); font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; padding:.9rem 1.25rem .3rem; }
 
 /* ---- Dropdown sub-menu (collapse) ---- */
 .sidebar .nav-group-toggle { cursor:pointer; }
 .sidebar .nav-group-toggle .chev { margin-left:auto; font-size:.75rem; transition:transform .2s ease; }
 .sidebar .nav-group-toggle[aria-expanded="true"] .chev { transform:rotate(180deg); }
-.sidebar .nav-group-toggle[aria-expanded="true"] { color:#fff; background:#273349; }
-.sidebar .submenu { background:rgba(0,0,0,.18); }
-.sidebar .submenu a.nav-link { padding-left:2.85rem; font-size:.9rem; }
+.sidebar .nav-group-toggle[aria-expanded="true"] { color:#fff; background:rgba(255,255,255,.1); }
+.sidebar .submenu { background:rgba(0,0,0,.15); border-radius:.6rem; margin:.15rem .6rem; }
+.sidebar .submenu a.nav-link { padding-left:2.4rem; font-size:.9rem; margin:.1rem .3rem; }
 .sidebar .submenu a.nav-link i { width:1.2rem; font-size:.9rem; }
 
 /* ---- Top bar mobile ---- */
@@ -71,10 +97,12 @@ body { background:#f4f6f9; }
 
 /* ---- Konten ---- */
 .main { padding:1rem; }
-.main > h4.page-title { margin-bottom:1.25rem; font-size:1.35rem; }
+.main > h4.page-title { margin-bottom:1.25rem; font-size:1.35rem; font-weight:700; color:#0f172a; }
 
-.card-stat { border:0; border-radius:.75rem; box-shadow:0 1px 3px rgba(0,0,0,.08); }
-.card-stat .icon { font-size:1.8rem; opacity:.85; }
+.card { border:1px solid #eef2f7; border-radius:1rem; box-shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px -12px rgba(15,23,42,.10); }
+.card-stat { transition:box-shadow .25s, transform .25s; }
+.card-stat:hover { box-shadow:0 8px 30px -6px rgba(13,148,136,.25); transform:translateY(-2px); }
+.card-stat .icon { font-size:1.8rem; opacity:.9; }
 
 /* Desktop: sidebar tetap terpampang, konten digeser */
 @media (min-width:992px){

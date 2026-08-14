@@ -10,16 +10,21 @@ $dari = $_GET['dari'] ?? date('Y-m-01');
 $sampai = $_GET['sampai'] ?? date('Y-m-d');
 $rows = [];
 if ($jabatan !== '') {
+    // Rekap memakai aturan yang sama dengan Info Per Guru agar angkanya konsisten.
+    // Absensi guru dikunci per NIP; rekap memakai aturan yang sama dengan Info Per Guru.
     $guru = dcGuruList($dc, $jabatan);
-    $ids = array_column($guru, 'id');
-    $rekap = absensiRekap($pdo, 'absensi_guru', 'guru_id', $ids, $dari, $sampai);
+    $nipList = array_column($guru, 'nip');
+    $rec = recAbsensi($pdo, 'guru', $nipList, $dari, $sampai);
+    $rekap = rekapPeriode($pdo, 'guru', $nipList, $rec, $dari, $sampai);
     foreach ($guru as $g) {
-        $c = $rekap[$g['id']] ?? [];
+        $c = $rekap[$g['nip']];
         $rows[] = [
             'nip' => $g['nip'], 'nama' => $g['nama'],
-            'hadir' => $c['hadir'] ?? 0, 'terlambat' => $c['terlambat'] ?? 0,
-            'izin' => $c['izin'] ?? 0, 'sakit' => $c['sakit'] ?? 0, 'alpha' => $c['alpha'] ?? 0,
-            'total' => array_sum($c),
+            'hadir' => $c['hadir'], 'terlambat' => $c['terlambat'],
+            'izin' => $c['izin'], 'sakit' => $c['sakit'],
+            'dinas' => $c['dinas'], 'cuti' => $c['cuti'], 'alpha' => $c['alpha'],
+            // Total hari kerja (hari libur tidak dihitung)
+            'total' => array_sum($c) - $c['libur'],
         ];
     }
 }
@@ -46,9 +51,9 @@ if ($jabatan !== '') {
 </div>
 <div class="card card-stat"><div class="card-body table-responsive">
   <table class="table table-hover table-sm align-middle">
-    <thead><tr><th>NIP</th><th>Nama Guru</th><th>Hadir</th><th>Terlambat</th><th>Izin</th><th>Sakit</th><th>Tidak Hadir</th><th>Total Hari</th></tr></thead>
+    <thead><tr><th>NIP</th><th>Nama Guru</th><th>Hadir</th><th>Terlambat</th><th>Izin</th><th>Sakit</th><th>Dinas Luar</th><th>Cuti</th><th>Tidak Hadir</th><th>Total Hari</th></tr></thead>
     <tbody>
-    <?php if (!$rows): ?><tr><td colspan="8" class="text-muted">Tidak ada guru pada jabatan ini.</td></tr><?php endif; ?>
+    <?php if (!$rows): ?><tr><td colspan="10" class="text-muted">Tidak ada guru pada jabatan ini.</td></tr><?php endif; ?>
     <?php foreach ($rows as $r): ?>
       <tr>
         <td><?= e($r['nip']) ?></td><td><?= e($r['nama']) ?></td>
@@ -56,6 +61,8 @@ if ($jabatan !== '') {
         <td><span class="badge bg-warning text-dark"><?= (int)$r['terlambat'] ?></span></td>
         <td><span class="badge bg-info"><?= (int)$r['izin'] ?></span></td>
         <td><span class="badge bg-primary"><?= (int)$r['sakit'] ?></span></td>
+        <td><span class="badge bg-dark"><?= (int)$r['dinas'] ?></span></td>
+        <td><span class="badge bg-secondary"><?= (int)$r['cuti'] ?></span></td>
         <td><span class="badge bg-danger"><?= (int)$r['alpha'] ?></span></td>
         <td><?= (int)$r['total'] ?></td>
       </tr>

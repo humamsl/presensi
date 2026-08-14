@@ -4,11 +4,24 @@ require_once __DIR__ . '/includes/header.php';
 
 $today = date('Y-m-d');
 
-function statusCounts(PDO $pdo, string $table, string $tanggal): array {
-    $counts = ['hadir'=>0,'terlambat'=>0,'izin'=>0,'sakit'=>0,'alpha'=>0];
-    $stmt = $pdo->prepare("SELECT status, COUNT(*) c FROM $table WHERE tanggal = ? GROUP BY status");
-    $stmt->execute([$tanggal]);
-    foreach ($stmt as $r) $counts[$r['status']] = (int)$r['c'];
+/**
+ * Jumlah orang per status pada satu tanggal (berlaku untuk siswa maupun guru —
+ * kedua tabel absensi berbentuk log event dengan struktur sama).
+ * Baris event diringkas dulu per orang, lalu statusnya dihitung dengan aturan
+ * laporan yang sama. Hanya orang yang punya catatan yang dihitung — sisanya
+ * masuk "tidak hadir" lewat pengurangan terhadap total siswa/guru.
+ */
+function statusCounts(PDO $pdo, string $tipe, string $tanggal, array $kal): array {
+    $counts = rekapKosong();
+    $info = $kal[$tanggal] ?? ['libur'=>false, 'batas'=>'07:00:00', 'ket'=>null];
+    [$tabel, $kol] = absTabel($tipe);
+    $st = $pdo->prepare("SELECT DISTINCT $kol AS orang FROM $tabel WHERE tanggal = ?");
+    $st->execute([$tanggal]);
+    $keys = $st->fetchAll(PDO::FETCH_COLUMN);
+    $rec = recAbsensi($pdo, $tipe, $keys, $tanggal, $tanggal);
+    foreach ($keys as $k) {
+        $counts[statusTanggal($info, $rec[$k][$tanggal] ?? null)['status']]++;
+    }
     return $counts;
 }
 
@@ -20,28 +33,36 @@ $totalSiswa = $ta
                        WHERE s.is_aktif=1 AND s.status_siswa='Aktif'")->fetchColumn()
     : 0;
 $totalGuru  = (int)$dc->query('SELECT COUNT(*) FROM guru WHERE is_aktif=1')->fetchColumn();
-$cs = statusCounts($pdo, 'absensi_siswa', $today);
-$cg = statusCounts($pdo, 'absensi_guru', $today);
+
+// Kalender 7 hari terakhir (sekali ambil, dipakai kartu hari ini + grafik)
+$mulai7 = date('Y-m-d', strtotime('-6 day'));
+$kalSiswa = kalenderPeriode($pdo, 'siswa', $mulai7, $today);
+$kalGuru  = kalenderPeriode($pdo, 'guru',  $mulai7, $today);
+
+$cs = statusCounts($pdo, 'siswa', $today, $kalSiswa);
+$cg = statusCounts($pdo, 'guru',  $today, $kalGuru);
 
 $siswaHadir = $cs['hadir'] + $cs['terlambat'];
 $siswaTidakHadir = $totalSiswa - $siswaHadir;
-$guruHadir = $cg['hadir'] + $cg['terlambat'];
+// Guru dinas luar tetap bertugas -> dihitung hadir; cuti tidak.
+$guruHadir = $cg['hadir'] + $cg['terlambat'] + $cg['dinas'];
 $guruTidakHadir = $totalGuru - $guruHadir;
 
 // Grafik 7 hari terakhir (gabungan siswa + guru per status)
-$labels = []; $series = ['hadir'=>[],'terlambat'=>[],'izin'=>[],'sakit'=>[],'alpha'=>[]];
+$labels = [];
+$series = ['hadir'=>[],'terlambat'=>[],'izin'=>[],'sakit'=>[],'dinas'=>[],'cuti'=>[],'alpha'=>[]];
 for ($i = 6; $i >= 0; $i--) {
     $d = date('Y-m-d', strtotime("-$i day"));
     $labels[] = date('d/m', strtotime($d));
-    $a = statusCounts($pdo, 'absensi_siswa', $d);
-    $b = statusCounts($pdo, 'absensi_guru', $d);
+    $a = statusCounts($pdo, 'siswa', $d, $kalSiswa);
+    $b = statusCounts($pdo, 'guru',  $d, $kalGuru);
     foreach ($series as $k => $_) $series[$k][] = $a[$k] + $b[$k];
 }
 ?>
 <?php if (!$ta): ?>
   <div class="alert alert-warning">Tidak ada <b>tahun ajaran aktif</b> di datacenter (<code><?= e(DC_NAME) ?></code>). Data siswa & kelas tidak dapat ditampilkan sampai ada tahun ajaran yang diaktifkan.</div>
 <?php else: ?>
-  <div class="text-muted small mb-3"><i class="bi bi-database me-1"></i>Sumber data master: <b>datacenter</b> (<?= e(DC_NAME) ?>) — Tahun Ajaran aktif <b><?= e($ta['nama_tahun_ajaran']) ?></b></div>
+  <div class="text-muted small mb-3"><i class="bi bi-database me-1"></i>Tahun Ajaran aktif <b><?= e($ta['nama_tahun_ajaran']) ?></b></div>
 <?php endif; ?>
 <div class="row g-3">
   <?php
@@ -87,6 +108,8 @@ new Chart(document.getElementById('chartAbsensi'), {
       { label: 'Terlambat',   data: <?= json_encode($series['terlambat']) ?>, backgroundColor: '#f59e0b' },
       { label: 'Izin',        data: <?= json_encode($series['izin']) ?>,      backgroundColor: '#3b82f6' },
       { label: 'Sakit',       data: <?= json_encode($series['sakit']) ?>,     backgroundColor: '#a855f7' },
+      { label: 'Dinas Luar',  data: <?= json_encode($series['dinas']) ?>,     backgroundColor: '#0f172a' },
+      { label: 'Cuti',        data: <?= json_encode($series['cuti']) ?>,      backgroundColor: '#64748b' },
       { label: 'Tidak Hadir', data: <?= json_encode($series['alpha']) ?>,     backgroundColor: '#ef4444' }
     ]
   },

@@ -10,16 +10,19 @@ $dari = $_GET['dari'] ?? date('Y-m-01');
 $sampai = $_GET['sampai'] ?? date('Y-m-d');
 $rows = [];
 if ($kelasId && $ta) {
+    // Absensi siswa dikunci per NIS; rekap memakai aturan yang sama dengan Info Per Siswa.
     $siswa = dcSiswaList($dc, (int)$ta['id'], $kelasId);
-    $ids = array_column($siswa, 'id');
-    $rekap = absensiRekap($pdo, 'absensi_siswa', 'siswa_id', $ids, $dari, $sampai);
+    $nisList = array_column($siswa, 'nis');
+    $rec = recAbsensi($pdo, 'siswa', $nisList, $dari, $sampai);
+    $rekap = rekapPeriode($pdo, 'siswa', $nisList, $rec, $dari, $sampai);
     foreach ($siswa as $s) {
-        $c = $rekap[$s['id']] ?? [];
+        $c = $rekap[$s['nis']];
         $rows[] = [
             'nis' => $s['nis'], 'nama' => $s['nama'],
-            'hadir' => $c['hadir'] ?? 0, 'terlambat' => $c['terlambat'] ?? 0,
-            'izin' => $c['izin'] ?? 0, 'sakit' => $c['sakit'] ?? 0, 'alpha' => $c['alpha'] ?? 0,
-            'total' => array_sum($c),
+            'hadir' => $c['hadir'], 'terlambat' => $c['terlambat'],
+            'izin' => $c['izin'], 'sakit' => $c['sakit'], 'alpha' => $c['alpha'],
+            // Total hari sekolah (hari libur tidak dihitung)
+            'total' => array_sum($c) - $c['libur'],
         ];
     }
 }

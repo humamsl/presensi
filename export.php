@@ -22,7 +22,9 @@ if ($type === 'guru' || $type === 'siswa') {
         if (!$p) die('Guru tidak ditemukan.');
         $title = 'Laporan Absensi Guru';
         $subtitle = $p['nama'] . ' (NIP: ' . $p['nip'] . ' — ' . $p['jabatan'] . ') | Periode: ' . $periode;
-        $absTable = 'absensi_guru'; $absCol = 'guru_id';
+        // Absensi guru dikunci per NIP (tabel absensi_guru berbentuk log event)
+        $tipe = 'guru';
+        $rec = recAbsensi($pdo, 'guru', [$p['nip']], $dari, $sampai)[$p['nip']] ?? [];
         $filename = 'absensi_guru_' . preg_replace('/[^a-z0-9]+/i', '_', $p['nama']);
     } else {
         $id = (int)($_GET['siswa_id'] ?? 0);
@@ -31,11 +33,13 @@ if ($type === 'guru' || $type === 'siswa') {
         if (!$p) die('Siswa tidak ditemukan.');
         $title = 'Laporan Absensi Siswa';
         $subtitle = $p['nama'] . ' (NIS: ' . $p['nis'] . ' — Kelas ' . ($p['kelas'] ?? '-') . ') | Periode: ' . $periode;
-        $absTable = 'absensi_siswa'; $absCol = 'siswa_id';
+        // Absensi siswa dikunci per NIS (tabel absensi_siswa berbentuk log event)
+        $tipe = 'siswa';
+        $rec = recAbsensi($pdo, 'siswa', [$p['nis']], $dari, $sampai)[$p['nis']] ?? [];
         $filename = 'absensi_siswa_' . preg_replace('/[^a-z0-9]+/i', '_', $p['nama']);
     }
     // Laporan per tanggal: setiap hari dalam rentang, status dari setting jadwal + catatan absensi
-    ['rows' => $lap, 'rekap' => $rekap] = laporanHarian($pdo, $absTable, $absCol, $id, $dari, $sampai);
+    ['rows' => $lap, 'rekap' => $rekap] = laporanHarian($pdo, $tipe, $rec, $dari, $sampai);
     $head = ['No', 'Tanggal', 'Hari', 'Jam Masuk', 'Jam Pulang', 'Status', 'Keterangan'];
     $no = 1;
     foreach ($lap as $r) {
@@ -50,7 +54,9 @@ if ($type === 'guru' || $type === 'siswa') {
         ];
     }
     $footerText = 'Rekap: Hadir ' . $rekap['hadir'] . ' | Terlambat ' . $rekap['terlambat'] . ' | Izin ' . $rekap['izin']
-        . ' | Sakit ' . $rekap['sakit'] . ' | Tidak Hadir ' . $rekap['alpha'] . ' | Libur ' . $rekap['libur'];
+        . ' | Sakit ' . $rekap['sakit']
+        . ($tipe === 'guru' ? ' | Dinas Luar ' . $rekap['dinas'] . ' | Cuti ' . $rekap['cuti'] : '')
+        . ' | Tidak Hadir ' . $rekap['alpha'] . ' | Libur ' . $rekap['libur'];
 
 } elseif ($type === 'jabatan' || $type === 'kelas') {
     // Laporan rekap per grup. Anggota grup dari datacenter ($dc), rekap absensi dari $pdo.
@@ -61,9 +67,10 @@ if ($type === 'guru' || $type === 'siswa') {
         $title = 'Laporan Rekap Absensi Guru Per Jabatan';
         $subtitle = 'Jabatan: ' . $grup . ' | Periode: ' . $periode;
         $guru = dcGuruList($dc, $grup);
-        $rekap = absensiRekap($pdo, 'absensi_guru', 'guru_id', array_column($guru, 'id'), $dari, $sampai);
-        foreach ($guru as $g) $members[] = ['noind' => $g['nip'], 'nama' => $g['nama'], 'c' => $rekap[$g['id']] ?? []];
-        $head = ['No', 'NIP', 'Nama Guru', 'Hadir', 'Terlambat', 'Izin', 'Sakit', 'Tidak Hadir', 'Total Hari'];
+        $nipList = array_column($guru, 'nip');
+        $rekap = rekapPeriode($pdo, 'guru', $nipList, recAbsensi($pdo, 'guru', $nipList, $dari, $sampai), $dari, $sampai);
+        foreach ($guru as $g) $members[] = ['noind' => $g['nip'], 'nama' => $g['nama'], 'c' => $rekap[$g['nip']]];
+        $head = ['No', 'NIP', 'Nama Guru', 'Hadir', 'Terlambat', 'Izin', 'Sakit', 'Dinas Luar', 'Cuti', 'Tidak Hadir', 'Total Hari'];
         $filename = 'rekap_absensi_jabatan_' . preg_replace('/[^a-z0-9]+/i', '_', $grup);
     } else {
         $id = (int)($_GET['kelas_id'] ?? 0);
@@ -74,16 +81,23 @@ if ($type === 'guru' || $type === 'siswa') {
         $title = 'Laporan Rekap Absensi Siswa Per Kelas';
         $subtitle = 'Kelas: ' . $grup . ' | Periode: ' . $periode;
         $siswa = dcSiswaList($dc, (int)$taX['id'], $id);
-        $rekap = absensiRekap($pdo, 'absensi_siswa', 'siswa_id', array_column($siswa, 'id'), $dari, $sampai);
-        foreach ($siswa as $s) $members[] = ['noind' => $s['nis'], 'nama' => $s['nama'], 'c' => $rekap[$s['id']] ?? []];
+        $nisList = array_column($siswa, 'nis');
+        $rekap = rekapPeriode($pdo, 'siswa', $nisList, recAbsensi($pdo, 'siswa', $nisList, $dari, $sampai), $dari, $sampai);
+        foreach ($siswa as $s) $members[] = ['noind' => $s['nis'], 'nama' => $s['nama'], 'c' => $rekap[$s['nis']]];
         $head = ['No', 'NIS', 'Nama Siswa', 'Hadir', 'Terlambat', 'Izin', 'Sakit', 'Tidak Hadir', 'Total Hari'];
         $filename = 'rekap_absensi_kelas_' . preg_replace('/[^a-z0-9]+/i', '_', $grup);
     }
     $no = 1;
     foreach ($members as $m) {
         $c = $m['c'];
-        $body[] = [$no++, $m['noind'], $m['nama'], (int)($c['hadir'] ?? 0), (int)($c['terlambat'] ?? 0),
-                   (int)($c['izin'] ?? 0), (int)($c['sakit'] ?? 0), (int)($c['alpha'] ?? 0), (int)array_sum($c)];
+        $row = [$no++, $m['noind'], $m['nama'], (int)$c['hadir'], (int)$c['terlambat'],
+                (int)$c['izin'], (int)$c['sakit']];
+        // Dinas luar & cuti hanya berlaku untuk guru
+        if ($type === 'jabatan') { $row[] = (int)$c['dinas']; $row[] = (int)$c['cuti']; }
+        $row[] = (int)$c['alpha'];
+        // Total hari = hari sekolah/kerja dalam periode (hari libur tidak dihitung)
+        $row[] = (int)array_sum($c) - (int)$c['libur'];
+        $body[] = $row;
     }
     $footerText = '';
 } else {

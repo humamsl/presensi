@@ -8,10 +8,15 @@ $siswaList = $ta ? dcSiswaList($dc, (int)$ta['id']) : [];
 $siswaId = (int)($_GET['siswa_id'] ?? 0);
 $dari = $_GET['dari'] ?? date('Y-m-01');
 $sampai = $_GET['sampai'] ?? date('Y-m-d');
-$rows = []; $rekap = ['hadir'=>0,'terlambat'=>0,'izin'=>0,'sakit'=>0,'alpha'=>0,'libur'=>0];
-if ($siswaId) {
-    // Setiap tanggal dalam rentang, status dihitung dari setting jadwal + catatan absensi
-    ['rows'=>$rows, 'rekap'=>$rekap] = laporanHarian($pdo, 'absensi_siswa', 'siswa_id', $siswaId, $dari, $sampai);
+$rows = []; $rekap = rekapKosong();
+if ($siswaId && $ta) {
+    // Absensi siswa dikunci per NIS (bukan id) sesuai struktur tabel absensi_siswa.
+    $s = dcSiswa($dc, (int)$ta['id'], $siswaId);
+    if ($s) {
+        // Setiap tanggal dalam rentang, status dihitung dari setting jadwal + catatan absensi
+        $rec = recAbsensi($pdo, 'siswa', [$s['nis']], $dari, $sampai);
+        ['rows'=>$rows, 'rekap'=>$rekap] = laporanHarian($pdo, 'siswa', $rec[$s['nis']] ?? [], $dari, $sampai);
+    }
 }
 ?>
 <form class="card card-stat mb-4"><div class="card-body row g-2 align-items-end">

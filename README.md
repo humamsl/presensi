@@ -13,7 +13,42 @@ Aplikasi memakai **dua koneksi database** (didefinisikan di `config.php`):
    - jabatan → kolom teks `guru.jabatan`
    - kelas → `rombongan_belajar` (tahun ajaran aktif)
 
-Tabel absensi menyimpan **id milik datacenter** (`absensi_siswa.siswa_id → datacenter_v2.siswa.id`, `absensi_guru.guru_id → datacenter_v2.guru.id`). Jadi data siswa/guru/jabatan/kelas selalu mengikuti datacenter tanpa perlu sinkronisasi.
+Tabel absensi merujuk data datacenter lewat nomor induk (`absensi_siswa.nis → datacenter_v2.siswa.nis`, `absensi_guru.nip → datacenter_v2.guru.nip`). Jadi data siswa/guru/jabatan/kelas selalu mengikuti datacenter tanpa perlu sinkronisasi.
+
+## Struktur Tabel Absensi (log event)
+
+`absensi_siswa` dan `absensi_guru` memakai **struktur yang sama** — satu baris = satu kejadian:
+
+| Kolom | Keterangan |
+|---|---|
+| `id` | primary key |
+| `nis` / `nip` | nomor induk siswa (fallback NISN) atau guru, merujuk datacenter |
+| `tanggal` | tanggal kejadian |
+| `jam` | jam scan (diisi untuk kode 0 & 1, boleh NULL untuk kode 2–6) |
+| `status` | kode status (lihat tabel di bawah) |
+| `keterangan` | catatan bebas |
+
+### Kode status
+
+| Kode | Arti | Kolom `jam` |
+|---|---|---|
+| 0 | masuk | jam scan masuk |
+| 1 | pulang | jam scan pulang |
+| 2 | sakit | NULL |
+| 3 | ijin | NULL |
+| 4 | alpha (tidak hadir) | NULL |
+| 5 | dinas luar | NULL |
+| 6 | cuti | NULL |
+
+Satu orang pada satu tanggal bisa punya beberapa baris, misalnya masuk (kode 0, jam 06:45) dan pulang (kode 1, jam 14:05). Ketidakhadiran cukup satu baris (kode 2–6).
+
+**Kode 5 (dinas luar) dan 6 (cuti)** berlaku untuk guru; dropdown koreksi siswa hanya menawarkan kode 2–4. Struktur tabelnya tetap sama sehingga kode ini bisa dipakai untuk siswa bila nanti diperlukan — cukup ubah `kodeKetidakhadiran()` di `config.php`.
+
+Status **hadir** dan **terlambat** tidak disimpan di database — keduanya dihitung otomatis dari jam masuk dibandingkan `batas_terlambat` pada Setting Jadwal hari yang bersangkutan. Hari yang tidak ada catatannya dihitung **Tidak Hadir** bila hari sekolah/kerja, atau **Libur** bila jatuh pada hari libur/akhir pekan.
+
+Pada dashboard, guru berstatus **dinas luar dihitung hadir** (tetap bertugas), sedangkan **cuti tidak**.
+
+Migrasi dari struktur lama ada di `migrasi_absensi_siswa.sql` dan `migrasi_absensi_guru.sql`.
 
 ## Cara Menjalankan
 
@@ -34,7 +69,7 @@ Tabel absensi menyimpan **id milik datacenter** (`absensi_siswa.siswa_id → dat
 3. **Info Absensi Guru** — per guru & per jabatan, filter periode tanggal.
 4. **Info Absensi Siswa** — per siswa & per kelas, filter periode tanggal.
 5. **Export Laporan** — tombol Export Excel (.xls) dan Export PDF (dompdf) tersedia di keempat halaman info absensi (per guru, per jabatan, per siswa, per kelas) mengikuti filter periode yang dipilih. Logika export ada di `export.php`.
-6. **Koreksi Absensi** — koreksi/input manual absensi siswa (filter kelas) dan guru per tanggal.
+6. **Koreksi Absensi** — koreksi/input manual per tanggal untuk siswa (filter kelas) dan guru. Pilih *Hadir* lalu isi jam masuk/pulang (tersimpan sebagai kode 0 & 1), atau pilih kode ketidakhadiran (siswa: Sakit/Ijin/Alpha; guru: ditambah Dinas Luar/Cuti) yang tersimpan sebagai satu baris kode 2–6.
 
 ## Catatan
 

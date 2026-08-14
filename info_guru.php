@@ -7,10 +7,15 @@ $guruList = dcGuruList($dc);
 $guruId = (int)($_GET['guru_id'] ?? 0);
 $dari = $_GET['dari'] ?? date('Y-m-01');
 $sampai = $_GET['sampai'] ?? date('Y-m-d');
-$rows = []; $rekap = ['hadir'=>0,'terlambat'=>0,'izin'=>0,'sakit'=>0,'alpha'=>0,'libur'=>0];
+$rows = []; $rekap = rekapKosong();
 if ($guruId) {
-    // Setiap tanggal dalam rentang, status dihitung dari setting jadwal + catatan absensi
-    ['rows'=>$rows, 'rekap'=>$rekap] = laporanHarian($pdo, 'absensi_guru', 'guru_id', $guruId, $dari, $sampai);
+    // Absensi guru dikunci per NIP sesuai struktur tabel absensi_guru.
+    $g = dcGuru($dc, $guruId);
+    if ($g) {
+        // Setiap tanggal dalam rentang, status dihitung dari setting jadwal + catatan absensi
+        $rec = recAbsensi($pdo, 'guru', [$g['nip']], $dari, $sampai);
+        ['rows'=>$rows, 'rekap'=>$rekap] = laporanHarian($pdo, 'guru', $rec[$g['nip']] ?? [], $dari, $sampai);
+    }
 }
 ?>
 <form class="card card-stat mb-4"><div class="card-body row g-2 align-items-end">

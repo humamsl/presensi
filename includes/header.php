@@ -27,6 +27,7 @@ $groups = [
         ['koreksi_guru.php', 'bi-pencil', 'Koreksi Guru'],
     ]],
     ['Akun', 'bi-person-circle', [
+        ['data_user.php', 'bi-people-fill', 'Data User'],
         ['logout.php', 'bi-box-arrow-right', 'Logout (' . ($_SESSION['user']['nama'] ?? '') . ')'],
     ]],
 ];
@@ -40,6 +41,8 @@ $groups = [
 <title><?= e($pageTitle ?? 'Absensi Sekolah') ?></title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <style>
 @import url('https://fonts.bunny.net/css?family=plus-jakarta-sans:400,500,600,700,800');
@@ -103,6 +106,31 @@ a { text-decoration:none; }
 .card-stat { transition:box-shadow .25s, transform .25s; }
 .card-stat:hover { box-shadow:0 8px 30px -6px rgba(13,148,136,.25); transform:translateY(-2px); }
 .card-stat .icon { font-size:1.8rem; opacity:.9; }
+
+/* ---- Select2 tampil seperti input/select Bootstrap (border, tinggi, padding, radius) ---- */
+.select2-container--bootstrap-5 .select2-selection {
+  min-height: calc(1.5em + .75rem + 2px);
+  padding: .375rem .75rem;
+  border: 1px solid var(--bs-border-color, #dee2e6);
+  border-radius: var(--bs-border-radius, .5rem);
+  background-color: #fff;
+  display: flex;
+  align-items: center;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+.select2-container--bootstrap-5 .select2-selection--single .select2-selection__rendered {
+  padding: 0; line-height: 1.5; color: #1e293b;
+}
+.select2-container--bootstrap-5 .select2-selection--single .select2-selection__placeholder { color: #94a3b8; }
+.select2-container--bootstrap-5 .select2-selection--single .select2-selection__arrow { height: 100%; top: 0; right: .5rem; }
+.select2-container--bootstrap-5.select2-container--focus .select2-selection,
+.select2-container--bootstrap-5.select2-container--open .select2-selection {
+  border-color: var(--brand, #14b8a6);
+  box-shadow: 0 0 0 .25rem rgba(20,184,166,.25);
+  outline: 0;
+}
+.select2-container--bootstrap-5 .select2-results__option--highlighted { background-color: var(--brand, #14b8a6); }
 
 /* Desktop: sidebar tetap terpampang, konten digeser */
 @media (min-width:992px){

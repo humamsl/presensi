@@ -20,6 +20,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->prepare('DELETE FROM upload_log WHERE mesin_id=?')->execute([(int)$_POST['id']]);
         $pdo->prepare('DELETE FROM mesin_absensi WHERE id=?')->execute([(int)$_POST['id']]);
         $msg = 'Mesin absensi dihapus.';
+    } elseif ($act === 'cek') {
+        // Cek koneksi NYATA: coba buka soket TCP ke ip:port mesin. Jika terjangkau -> catat waktu online.
+        $id = (int)$_POST['id'];
+        $m = $pdo->prepare('SELECT * FROM mesin_absensi WHERE id=?');
+        $m->execute([$id]);
+        $m = $m->fetch();
+        if (!$m) {
+            $err = 'Mesin tidak ditemukan.';
+        } else {
+            $fp = @fsockopen($m['ip'], (int)$m['port'], $errno, $errstr, 2); // timeout 2 detik
+            if ($fp) {
+                fclose($fp);
+                $pdo->prepare('UPDATE mesin_absensi SET last_online=NOW() WHERE id=?')->execute([$id]);
+                $msg = "Mesin \"{$m['nama']}\" ONLINE ({$m['ip']}:{$m['port']}). Waktu online dicatat: " . date('d-m-Y H:i:s') . ".";
+            } else {
+                $err = "Mesin \"{$m['nama']}\" tidak dapat dijangkau ({$m['ip']}:{$m['port']}) — offline" . ($errstr ? " ($errstr)" : '') . ".";
+            }
+        }
     } elseif ($act === 'upload') {
         // Upload terpisah: pilih mesin + jenis data (per tingkat kelas / per rombel / per jabatan).
         // Jumlah data dihitung dari datacenter; PIN mesin memakai NIS/NIP (simulasi -> dicatat di riwayat).
@@ -102,7 +120,7 @@ require_once __DIR__ . '/includes/header.php';
   </div>
   <div class="card-body table-responsive">
     <table class="table table-hover align-middle">
-      <thead><tr><th>Nama</th><th>IP:Port</th><th>Serial Number</th><th>Tipe</th><th>Lokasi</th><th>Status</th><th style="width:110px">Aksi</th></tr></thead>
+      <thead><tr><th>Nama</th><th>IP:Port</th><th>Serial Number</th><th>Tipe</th><th>Lokasi</th><th>Status</th><th>Waktu Online Terakhir</th><th style="width:150px">Aksi</th></tr></thead>
       <tbody>
       <?php foreach ($mesinList as $m): ?>
         <tr>
@@ -112,7 +130,12 @@ require_once __DIR__ . '/includes/header.php';
           <td><?= e($m['tipe']) ?></td>
           <td><?= e($m['lokasi']) ?></td>
           <td><?= $m['aktif'] ? '<span class="badge bg-success">Aktif</span>' : '<span class="badge bg-secondary">Nonaktif</span>' ?></td>
+          <td><?= $m['last_online'] ? e(date('d-m-Y H:i:s', strtotime($m['last_online']))) : '<span class="text-muted">Belum pernah</span>' ?></td>
           <td>
+            <form method="post" class="d-inline">
+              <input type="hidden" name="act" value="cek"><input type="hidden" name="id" value="<?= $m['id'] ?>">
+              <button class="btn btn-sm btn-outline-primary" title="Cek koneksi mesin (TCP ke IP:port)"><i class="bi bi-wifi"></i></button>
+            </form>
             <button class="btn btn-sm btn-warning" onclick='editMesin(<?= json_encode($m, JSON_HEX_APOS | JSON_HEX_QUOT) ?>)'><i class="bi bi-pencil"></i></button>
             <form method="post" class="d-inline" onsubmit="return confirm('Hapus mesin ini?')">
               <input type="hidden" name="act" value="delete"><input type="hidden" name="id" value="<?= $m['id'] ?>">
@@ -121,7 +144,7 @@ require_once __DIR__ . '/includes/header.php';
           </td>
         </tr>
       <?php endforeach; ?>
-      <?php if (!$mesinList): ?><tr><td colspan="7" class="text-muted">Belum ada mesin absensi.</td></tr><?php endif; ?>
+      <?php if (!$mesinList): ?><tr><td colspan="8" class="text-muted">Belum ada mesin absensi.</td></tr><?php endif; ?>
       </tbody>
     </table>
   </div>
@@ -154,18 +177,24 @@ require_once __DIR__ . '/includes/header.php';
       </div>
       <div class="col-md-4">
         <label class="form-label">Pilihan</label>
-        <select class="form-select scope-sel" id="sel_tingkat" name="tingkat" required>
-          <?php foreach ($tingkatList as $t): ?><option value="<?= $t ?>">Tingkat <?= $t ?></option><?php endforeach; ?>
-          <?php if (!$tingkatList): ?><option value="">(tidak ada kelas)</option><?php endif; ?>
-        </select>
-        <select class="form-select scope-sel" id="sel_rombel" name="rombel_id" required>
-          <?php foreach ($rombelList as $rb): ?><option value="<?= $rb['id'] ?>"><?= e($rb['nama']) ?> — Tingkat <?= e($rb['tingkat']) ?></option><?php endforeach; ?>
-          <?php if (!$rombelList): ?><option value="">(tidak ada rombel)</option><?php endif; ?>
-        </select>
-        <select class="form-select scope-sel" id="sel_jabatan" name="jabatan" required>
-          <?php foreach ($jabatanList as $jb): ?><option value="<?= e($jb) ?>"><?= e($jb) ?></option><?php endforeach; ?>
-          <?php if (!$jabatanList): ?><option value="">(tidak ada jabatan)</option><?php endif; ?>
-        </select>
+        <div class="scope-wrap" data-scope="tingkat">
+          <select class="form-select" id="sel_tingkat" name="tingkat">
+            <?php foreach ($tingkatList as $t): ?><option value="<?= $t ?>">Tingkat <?= $t ?></option><?php endforeach; ?>
+            <?php if (!$tingkatList): ?><option value="">(tidak ada kelas)</option><?php endif; ?>
+          </select>
+        </div>
+        <div class="scope-wrap" data-scope="rombel">
+          <select class="form-select" id="sel_rombel" name="rombel_id">
+            <?php foreach ($rombelList as $rb): ?><option value="<?= $rb['id'] ?>"><?= e($rb['nama']) ?> — Tingkat <?= e($rb['tingkat']) ?></option><?php endforeach; ?>
+            <?php if (!$rombelList): ?><option value="">(tidak ada rombel)</option><?php endif; ?>
+          </select>
+        </div>
+        <div class="scope-wrap" data-scope="jabatan">
+          <select class="form-select" id="sel_jabatan" name="jabatan">
+            <?php foreach ($jabatanList as $jb): ?><option value="<?= e($jb) ?>"><?= e($jb) ?></option><?php endforeach; ?>
+            <?php if (!$jabatanList): ?><option value="">(tidak ada jabatan)</option><?php endif; ?>
+          </select>
+        </div>
       </div>
       <div class="col-12 d-flex align-items-center flex-wrap gap-2">
         <button class="btn btn-success"><i class="bi bi-upload me-1"></i>Upload ke Mesin</button>
@@ -241,17 +270,13 @@ function editMesin(m) {
   document.getElementById('f_aktif').checked = m.aktif == 1;
   new bootstrap.Modal(document.getElementById('modalMesin')).show();
 }
-// Tampilkan hanya pilihan yang sesuai jenis data; yang lain dinonaktifkan agar tak ikut terkirim
+// Tampilkan hanya pilihan yang sesuai jenis data (sembunyikan wrapper agar tampilan Select2 ikut
+// tersembunyi). Server hanya membaca field sesuai "scope", jadi field lain diabaikan.
 function toggleScope() {
   const scope = document.getElementById('up_scope').value;
-  const map = { tingkat: 'sel_tingkat', rombel: 'sel_rombel', jabatan: 'sel_jabatan' };
-  for (const key in map) {
-    const el = document.getElementById(map[key]);
-    if (!el) continue;
-    const on = (key === scope);
-    el.style.display = on ? '' : 'none';
-    el.disabled = !on;
-  }
+  document.querySelectorAll('.scope-wrap').forEach(w => {
+    w.style.display = (w.dataset.scope === scope) ? '' : 'none';
+  });
 }
 if (document.getElementById('up_scope')) toggleScope();
 </script>

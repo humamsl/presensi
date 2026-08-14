@@ -8,28 +8,33 @@ $tanggal = $_GET['tanggal'] ?? $_POST['tanggal'] ?? date('Y-m-d');
 $kelasId = (int)($_GET['kelas_id'] ?? $_POST['kelas_id'] ?? 0);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
-    $siswaId = (int)$_POST['siswa_id'];
-    $jamMasuk = $_POST['jam_masuk'] ?: null;
-    $jamPulang = $_POST['jam_pulang'] ?: null;
-    $stmt = $pdo->prepare('INSERT INTO absensi_siswa (siswa_id, tanggal, jam_masuk, jam_pulang, status, keterangan)
-        VALUES (?,?,?,?,?,?)
-        ON DUPLICATE KEY UPDATE jam_masuk=VALUES(jam_masuk), jam_pulang=VALUES(jam_pulang), status=VALUES(status), keterangan=VALUES(keterangan)');
-    $stmt->execute([$siswaId, $tanggal, $jamMasuk, $jamPulang, $_POST['status'], $_POST['keterangan'] ?: null]);
+    // absensi_siswa = log event. Koreksi satu hari = tulis ulang seluruh baris
+    // siswa tsb pada tanggal itu: jam masuk -> kode 0, jam pulang -> kode 1,
+    // ketidakhadiran -> kode 2/3/4 (satu baris, tanpa jam).
+    simpanAbsensi(
+        $pdo, 'siswa', trim($_POST['nis'] ?? ''), $tanggal,
+        ($_POST['kode'] ?? '') === '' ? null : (int)$_POST['kode'],
+        // Input jam di-disable saat status ketidakhadiran, jadi bisa tidak terkirim.
+        ($_POST['jam_masuk'] ?? '') ?: null,
+        ($_POST['jam_pulang'] ?? '') ?: null,
+        ($_POST['keterangan'] ?? '') !== '' ? $_POST['keterangan'] : null
+    );
     $msg = 'Koreksi absensi siswa berhasil disimpan.';
 }
 
-// Daftar siswa & kelas dari datacenter ($dc); baris absensi tanggal ini dari $pdo, digabung di PHP.
+// Daftar siswa & kelas dari datacenter ($dc); catatan absensi tanggal ini dari $pdo, digabung di PHP.
 $ta = tahunAjaranAktif($dc);
 $kelasList = $ta ? dcKelasList($dc, (int)$ta['id']) : [];
 $siswa = $ta ? dcSiswaList($dc, (int)$ta['id'], $kelasId) : [];
-$absen = absensiByDate($pdo, 'absensi_siswa', 'siswa_id', array_column($siswa, 'id'), $tanggal);
+$rec = recAbsensi($pdo, 'siswa', array_column($siswa, 'nis'), $tanggal, $tanggal);
 $rows = [];
 foreach ($siswa as $s) {
-    $a = $absen[$s['id']] ?? null;
+    $a = $rec[$s['nis']][$tanggal] ?? null;
     $rows[] = [
-        'id' => $s['id'], 'nis' => $s['nis'], 'nama' => $s['nama'], 'kelas' => $s['kelas'],
+        'nis' => $s['nis'], 'nama' => $s['nama'], 'kelas' => $s['kelas'],
         'jam_masuk' => $a['jam_masuk'] ?? null, 'jam_pulang' => $a['jam_pulang'] ?? null,
-        'status' => $a['status'] ?? null, 'keterangan' => $a['keterangan'] ?? null,
+        // status catatan: null = belum ada catatan, 'sakit'/'izin'/'alpha' = kode 2/3/4
+        'status' => $a['status'] ?? null, 'ada' => $a !== null, 'keterangan' => $a['keterangan'] ?? null,
     ];
 }
 
@@ -49,29 +54,38 @@ require_once __DIR__ . '/includes/header.php';
 </div></form>
 
 <?php foreach ($rows as $r): ?>
-<form method="post" id="fr<?= $r['id'] ?>">
+<form method="post" id="fr<?= e($r['nis']) ?>">
   <input type="hidden" name="act" value="save">
   <input type="hidden" name="tanggal" value="<?= e($tanggal) ?>">
   <input type="hidden" name="kelas_id" value="<?= $kelasId ?>">
-  <input type="hidden" name="siswa_id" value="<?= $r['id'] ?>">
+  <input type="hidden" name="nis" value="<?= e($r['nis']) ?>">
 </form>
 <?php endforeach; ?>
 
 <div class="card card-stat"><div class="card-body table-responsive">
   <table class="table table-sm align-middle">
-    <thead><tr><th>NIS</th><th>Nama</th><th>Kelas</th><th>Jam Masuk</th><th>Jam Pulang</th><th>Status</th><th>Keterangan</th><th style="width:90px"></th></tr></thead>
+    <thead><tr>
+      <th>NIS</th><th>Nama</th><th>Kelas</th>
+      <th>Jam Masuk <span class="text-muted fw-normal">(kode 0)</span></th>
+      <th>Jam Pulang <span class="text-muted fw-normal">(kode 1)</span></th>
+      <th>Ketidakhadiran</th><th>Keterangan</th><th style="width:90px"></th>
+    </tr></thead>
     <tbody>
-    <?php foreach ($rows as $r): $f = 'fr' . $r['id']; ?>
-      <tr class="<?= $r['status'] === null ? 'table-light' : '' ?>">
+    <?php if (!$rows): ?><tr><td colspan="8" class="text-muted">Tidak ada siswa pada kelas / tahun ajaran aktif.</td></tr><?php endif; ?>
+    <?php foreach ($rows as $r): $f = 'fr' . $r['nis']; $absen = $r['status'] !== null; ?>
+      <tr class="<?= $r['ada'] ? '' : 'table-light' ?>">
         <td><?= e($r['nis']) ?></td>
         <td><?= e($r['nama']) ?></td>
         <td><?= e($r['kelas']) ?></td>
-        <td><input type="time" class="form-control form-control-sm" name="jam_masuk" form="<?= $f ?>" value="<?= e($r['jam_masuk'] ? substr($r['jam_masuk'],0,5) : '') ?>"></td>
-        <td><input type="time" class="form-control form-control-sm" name="jam_pulang" form="<?= $f ?>" value="<?= e($r['jam_pulang'] ? substr($r['jam_pulang'],0,5) : '') ?>"></td>
+        <td><input type="time" class="form-control form-control-sm" name="jam_masuk" form="<?= $f ?>" value="<?= e($r['jam_masuk'] ? substr($r['jam_masuk'],0,5) : '') ?>" <?= $absen ? 'disabled' : '' ?>></td>
+        <td><input type="time" class="form-control form-control-sm" name="jam_pulang" form="<?= $f ?>" value="<?= e($r['jam_pulang'] ? substr($r['jam_pulang'],0,5) : '') ?>" <?= $absen ? 'disabled' : '' ?>></td>
         <td>
-          <select class="form-select form-select-sm" name="status" form="<?= $f ?>">
-            <?php foreach ($STATUS_LIST as $k2 => $label): ?>
-              <option value="<?= $k2 ?>" <?= $r['status'] === $k2 || ($r['status'] === null && $k2 === 'alpha') ? 'selected' : '' ?>><?= e($label) ?></option>
+          <select class="form-select form-select-sm" name="kode" form="<?= $f ?>" onchange="toggleJam(this)">
+            <option value="">— Hadir (isi jam) —</option>
+            <?php foreach (kodeKetidakhadiran('siswa') as $kode): ?>
+              <option value="<?= $kode ?>" <?= $r['status'] === kodeKeStatus($kode) ? 'selected' : '' ?>>
+                <?= $kode ?> — <?= e(kodeLabel($kode)) ?>
+              </option>
             <?php endforeach; ?>
           </select>
         </td>
@@ -81,6 +95,20 @@ require_once __DIR__ . '/includes/header.php';
     <?php endforeach; ?>
     </tbody>
   </table>
-  <div class="text-muted small">Baris berwarna abu-abu = belum ada data absensi pada tanggal tersebut. Klik simpan untuk membuat/mengoreksi data.</div>
+  <div class="text-muted small">
+    Baris abu-abu = belum ada catatan absensi pada tanggal tersebut.
+    Pilih <b>Hadir</b> lalu isi jam untuk menyimpan event masuk (kode 0) dan pulang (kode 1);
+    pilih Sakit/Ijin/Alpha untuk menyimpan satu baris ketidakhadiran (kode 2/3/4).
+    Status <b>Terlambat</b> tidak disimpan — dihitung otomatis dari jam masuk terhadap batas terlambat.
+  </div>
 </div></div>
+
+<script>
+// Jam hanya relevan saat status Hadir; kunci input saat memilih sakit/ijin/alpha.
+function toggleJam(sel) {
+  const tr = sel.closest('tr');
+  const absen = sel.value !== '';
+  tr.querySelectorAll('input[type=time]').forEach(i => { i.disabled = absen; if (absen) i.value = ''; });
+}
+</script>
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

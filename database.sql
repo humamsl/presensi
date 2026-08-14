@@ -11,9 +11,9 @@
 --     - jabatan -> datacenter_v2.guru.jabatan (kolom teks)
 --     - kelas   -> datacenter_v2.rombongan_belajar (tahun ajaran aktif)
 --
---  Tabel absensi menyimpan id milik datacenter:
---     absensi_siswa.siswa_id     -> datacenter_v2.siswa.id
---     absensi_guru.guru_id       -> datacenter_v2.guru.id
+--  Tabel absensi merujuk data milik datacenter:
+--     absensi_siswa.nis          -> datacenter_v2.siswa.nis (fallback nisn)
+--     absensi_guru.nip           -> datacenter_v2.guru.nip
 --     jadwal_shift_guru.guru_id  -> datacenter_v2.guru.id
 --  (Tidak ada FOREIGN KEY lintas-database karena master berada di DB lain.)
 -- ============================================================================
@@ -49,7 +49,8 @@ CREATE TABLE mesin_absensi (
   serial_number VARCHAR(50) DEFAULT NULL,
   tipe VARCHAR(50) DEFAULT 'Fingerprint',
   lokasi VARCHAR(100) DEFAULT NULL,
-  aktif TINYINT(1) NOT NULL DEFAULT 1
+  aktif TINYINT(1) NOT NULL DEFAULT 1,
+  last_online DATETIME DEFAULT NULL COMMENT 'waktu terakhir mesin terjangkau (online)'
 );
 
 CREATE TABLE upload_log (
@@ -87,28 +88,35 @@ CREATE TABLE jadwal_shift_guru (
   FOREIGN KEY (shift_id) REFERENCES shift(id)
 );
 
--- siswa_id merujuk datacenter_v2.siswa.id (tanpa FK lintas-database)
+-- ----------------------------------------------------------------------------
+--  Kedua tabel absensi berbentuk LOG EVENT: satu baris = satu kejadian.
+--    status: 0=masuk, 1=pulang, 2=sakit, 3=ijin, 4=alpha, 5=dinas luar, 6=cuti
+--    kode 0/1 mengisi kolom jam (jam scan); kode 2-6 boleh tanpa jam.
+--    kode 5 & 6 dipakai untuk guru; koreksi siswa hanya menawarkan kode 2-4.
+--    "hadir"/"terlambat" tidak disimpan -> dihitung dari jam masuk terhadap
+--    batas_terlambat pada jadwal_absensi hari ybs.
+--  Kunci orang memakai nomor induk milik datacenter (tanpa FK lintas-database).
+-- ----------------------------------------------------------------------------
 CREATE TABLE absensi_siswa (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  siswa_id INT NOT NULL COMMENT 'ref datacenter_v2.siswa.id',
+  nis VARCHAR(30) NOT NULL COMMENT 'ref datacenter_v2.siswa.nis (fallback nisn)',
   tanggal DATE NOT NULL,
-  jam_masuk TIME DEFAULT NULL,
-  jam_pulang TIME DEFAULT NULL,
-  status ENUM('hadir','terlambat','izin','sakit','alpha') NOT NULL DEFAULT 'alpha',
+  jam TIME DEFAULT NULL,
+  status TINYINT NOT NULL COMMENT '0=masuk,1=pulang,2=sakit,3=ijin,4=alpha,5=dinas luar,6=cuti',
   keterangan VARCHAR(200) DEFAULT NULL,
-  UNIQUE KEY uk_siswa_tgl (siswa_id, tanggal)
+  UNIQUE KEY uk_nis_tgl_status (nis, tanggal, status),
+  KEY idx_tanggal (tanggal)
 );
 
--- guru_id merujuk datacenter_v2.guru.id (tanpa FK lintas-database)
 CREATE TABLE absensi_guru (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  guru_id INT NOT NULL COMMENT 'ref datacenter_v2.guru.id',
+  nip VARCHAR(30) NOT NULL COMMENT 'ref datacenter_v2.guru.nip',
   tanggal DATE NOT NULL,
-  jam_masuk TIME DEFAULT NULL,
-  jam_pulang TIME DEFAULT NULL,
-  status ENUM('hadir','terlambat','izin','sakit','alpha') NOT NULL DEFAULT 'alpha',
+  jam TIME DEFAULT NULL,
+  status TINYINT NOT NULL COMMENT '0=masuk,1=pulang,2=sakit,3=ijin,4=alpha,5=dinas luar,6=cuti',
   keterangan VARCHAR(200) DEFAULT NULL,
-  UNIQUE KEY uk_guru_tgl (guru_id, tanggal)
+  UNIQUE KEY uk_nip_tgl_status (nip, tanggal, status),
+  KEY idx_tanggal (tanggal)
 );
 
 -- ============ SEED DATA (konfigurasi aplikasi saja) ============

@@ -4,14 +4,18 @@
 // login "berhasil" tapi session hilang. Cari folder pertama yang writable:
 //   1) temp sistem (di luar web root, paling aman)
 //   2) folder ./sessions di dalam aplikasi (fallback)
-foreach ([sys_get_temp_dir() . '/presensi_sessions', __DIR__ . '/sessions'] as $sessionDir) {
-    if (!is_dir($sessionDir)) { @mkdir($sessionDir, 0700, true); }
-    if (is_dir($sessionDir) && is_writable($sessionDir)) {
-        session_save_path($sessionDir);
-        break;
+// Endpoint mesin absensi (ADMS) mendefinisikan TANPA_SESSION sebelum memuat file
+// ini: mesin memanggil server tiap beberapa detik, jadi jangan bikin file session.
+if (!defined('TANPA_SESSION')) {
+    foreach ([sys_get_temp_dir() . '/presensi_sessions', __DIR__ . '/sessions'] as $sessionDir) {
+        if (!is_dir($sessionDir)) { @mkdir($sessionDir, 0700, true); }
+        if (is_dir($sessionDir) && is_writable($sessionDir)) {
+            session_save_path($sessionDir);
+            break;
+        }
     }
+    session_start();
 }
-session_start();
 date_default_timezone_set('Asia/Jakarta');
 
 /*
@@ -32,23 +36,46 @@ date_default_timezone_set('Asia/Jakarta');
  *  Tabel absensi merujuk data datacenter tanpa FK lintas-database:
  *    absensi_siswa.nis           -> datacenter_v2.siswa.nis (fallback nisn)
  *    absensi_guru.nip            -> datacenter_v2.guru.nip
- *    jadwal_shift_guru.guru_id   -> datacenter_v2.guru.id
+ *    jadwal_shift_guru.nip       -> datacenter_v2.guru.nip
  * ============================================================================
  */
 
+/*
+ * ---------------------------------------------------------------------------
+ *  PENGATURAN PER SERVER (agar aplikasi bisa dipindah tanpa mengubah kode)
+ * ---------------------------------------------------------------------------
+ *  Urutan sumber nilai, yang pertama ditemukan dipakai:
+ *    1. berkas config.local.php  (salin dari config.local.example.php)
+ *    2. variabel lingkungan      (berguna di panel hosting seperti Virtualmin)
+ *    3. nilai bawaan di bawah    (cocok untuk Laragon/XAMPP di komputer sendiri)
+ *
+ *  Saat pindah server, cukup buat satu berkas config.local.php — tidak ada
+ *  berkas kode lain yang perlu disentuh. config.local.php diabaikan git,
+ *  jadi setelan tiap server tidak saling menimpa.
+ */
+$konfLokal = is_file(__DIR__ . '/config.local.php') ? (require __DIR__ . '/config.local.php') : [];
+if (!is_array($konfLokal)) $konfLokal = [];
+
+function konf(string $kunci, string $bawaan): string {
+    global $konfLokal;
+    if (array_key_exists($kunci, $konfLokal)) return (string)$konfLokal[$kunci];
+    $env = getenv($kunci);
+    return $env !== false && $env !== '' ? $env : $bawaan;
+}
+
 // ---- Koneksi 1: Database Absensi ----
-define('DB_HOST', '127.0.0.1');
-define('DB_PORT', '3306');
-define('DB_NAME', 'absensi_sekolah');
-define('DB_USER', 'root');
-define('DB_PASS', '');
+define('DB_HOST', konf('DB_HOST', '127.0.0.1'));
+define('DB_PORT', konf('DB_PORT', '3306'));
+define('DB_NAME', konf('DB_NAME', 'absensi_sekolah'));
+define('DB_USER', konf('DB_USER', 'root'));
+define('DB_PASS', konf('DB_PASS', ''));
 
 // ---- Koneksi 2: Database Datacenter (sumber data master) ----
-define('DC_HOST', '127.0.0.1');
-define('DC_PORT', '3306');
-define('DC_NAME', 'datacenter_v2');
-define('DC_USER', 'root');
-define('DC_PASS', '');
+define('DC_HOST', konf('DC_HOST', '127.0.0.1'));
+define('DC_PORT', konf('DC_PORT', '3306'));
+define('DC_NAME', konf('DC_NAME', 'datacenter_v2'));
+define('DC_USER', konf('DC_USER', 'root'));
+define('DC_PASS', konf('DC_PASS', ''));
 
 function connectPDO(string $host, string $port, string $name, string $user, string $pass, string $label): PDO {
     try {
@@ -57,7 +84,9 @@ function connectPDO(string $host, string $port, string $name, string $user, stri
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]);
     } catch (PDOException $e) {
-        die("Koneksi database $label gagal: " . $e->getMessage());
+        die("Koneksi database $label gagal: " . $e->getMessage()
+          . "\n\nPerbaiki di berkas config.local.php (salin dari config.local.example.php)"
+          . " pada folder aplikasi, lalu muat ulang halaman ini.");
     }
 }
 
@@ -206,12 +235,200 @@ function rekapKosong(): array {
 }
 
 // ============================================================================
+//  ADMS (Push SDK ZKTeco) — mesin mengirim data ke server lewat HTTP /iclock/...
+// ----------------------------------------------------------------------------
+//  Kolom "status" pada ATTLOG mesin adalah PUNCH STATE, bukan kode aplikasi:
+//     0 = check-in     1 = check-out     2 = break-out
+//     3 = break-in     4 = overtime-in   5 = overtime-out
+//  Hanya check-in/out (& overtime) yang jadi event absensi kode 0/1. State lain
+//  tetap disimpan mentah di adms_scan tapi tidak menulis ke tabel absensi,
+//  supaya tidak tertukar dengan kode aplikasi 2-6 (sakit/ijin/alpha/dinas/cuti).
+// ============================================================================
+
+/** Terima data dari SN yang belum terdaftar? true = tolak (data mesin asing hilang). */
+const ADMS_SN_KETAT = false;
+
+/**
+ * Alamat dasar aplikasi, dideteksi dari permintaan yang sedang berjalan.
+ * Dipakai untuk menampilkan alamat ADMS yang harus diisikan ke mesin, sehingga
+ * saat aplikasi dipindah server tidak ada yang perlu diubah di kode — cukup
+ * buka halaman Setting Mesin dan salin alamat yang tertera.
+ */
+function urlDasarAplikasi(): string {
+    $https = (!empty($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS']) !== 'off')
+        || (($_SERVER['SERVER_PORT'] ?? '') === '443')
+        || (strtolower($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_NAME'] ?? 'localhost');
+    // Folder aplikasi relatif terhadap akar situs ('' bila aplikasi di akar domain)
+    $basis = str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/'));
+    $basis = rtrim($basis === '/' || $basis === '.' ? '' : $basis, '/');
+    return ($https ? 'https' : 'http') . '://' . $host . $basis;
+}
+
+/** Alamat yang diisikan ke menu Cloud Server / ADMS pada mesin absensi. */
+function urlAdms(): string {
+    return urlDasarAplikasi() . '/adms/index.php';
+}
+
+/**
+ * Punch state mesin -> kode event aplikasi (ABS_MASUK/ABS_PULANG).
+ * Mesin yang tidak memakai tombol status mengirim 255 ("tanpa status") —
+ * diperlakukan sebagai masuk, lalu heuristik urutan di admsTulisAbsensi()
+ * yang mengubah scan berikutnya pada hari sama menjadi pulang.
+ * Null berarti diabaikan (hanya disimpan mentah).
+ */
+function admsKodeEvent(int $statusMesin): ?int {
+    return match ($statusMesin) {
+        1, 5    => ABS_PULANG,   // check-out, overtime-out
+        2, 3    => null,         // break-out/in: bukan absensi harian
+        default => ABS_MASUK,    // 0, 4, 255, dan state lain yang tak dikenal
+    };
+}
+
+/** PIN mesin tanpa nol di depan (mesin kerap membuang nol awal: "000181" -> "181"). */
+function admsPinNormal(string $pin): string {
+    $s = ltrim(trim($pin), '0');
+    return $s === '' ? '0' : $s;
+}
+
+/**
+ * Tentukan PIN mesin untuk seseorang, sekaligus simpan pemetaannya di mesin_pin.
+ * Urutan: pemetaan yang sudah ada -> nomor induk bila muat (maks 9 digit angka,
+ * batas umum PIN ZKTeco) -> nomor urut dari blok 900001 (mis. NIP 18 digit).
+ */
+function admsAlokasiPin(PDO $pdo, string $tipe, string $nomorInduk): string {
+    $st = $pdo->prepare('SELECT pin FROM mesin_pin WHERE tipe=? AND nomor_induk=?');
+    $st->execute([$tipe, $nomorInduk]);
+    $lama = $st->fetchColumn();
+    if ($lama !== false && $lama !== null && $lama !== '') return (string)$lama;
+
+    $pin = '';
+    $kandidat = admsPinNormal($nomorInduk);
+    $dipakai = $pdo->prepare('SELECT COUNT(*) FROM mesin_pin WHERE pin=?');
+
+    // Nomor induk dipakai apa adanya bila muat di mesin & belum dipakai orang lain
+    if (ctype_digit($kandidat) && strlen($kandidat) <= 9) {
+        $dipakai->execute([$kandidat]);
+        if (!$dipakai->fetchColumn()) $pin = $kandidat;
+    }
+    if ($pin === '') {
+        // Blok cadangan untuk nomor induk yang tidak muat di mesin (mis. NIP 18 digit)
+        $mulai = (int)$pdo->query('SELECT COALESCE(MAX(CAST(pin AS UNSIGNED)), 900000) FROM mesin_pin
+                                   WHERE CAST(pin AS UNSIGNED) >= 900000')->fetchColumn();
+        do {
+            $mulai++;
+            $dipakai->execute([(string)$mulai]);
+        } while ($dipakai->fetchColumn());
+        $pin = (string)$mulai;
+    }
+
+    $pdo->prepare('INSERT INTO mesin_pin (pin, tipe, nomor_induk) VALUES (?,?,?)
+                   ON DUPLICATE KEY UPDATE tipe=VALUES(tipe), nomor_induk=VALUES(nomor_induk)')
+        ->execute([$pin, $tipe, $nomorInduk]);
+    return $pin;
+}
+
+/**
+ * Susun perintah pendaftaran user ke mesin (format Push SDK, antar-field TAB).
+ * Pri: 0 = user biasa, 14 = admin mesin.
+ */
+function admsPerintahUser(string $pin, string $nama, int $pri = 0): string {
+    // Nama dibersihkan dari TAB/baris baru & dipangkas — mesin umumnya maks 24 karakter.
+    $nama = mb_substr(preg_replace('/\s+/', ' ', trim($nama)), 0, 24);
+    return "DATA UPDATE USERINFO PIN=$pin\tName=$nama\tPri=$pri\tPasswd=\tCard=\tGrp=1\tTZ=0000000000000000";
+}
+
+/** Perintah hapus user dari mesin. */
+function admsPerintahHapusUser(string $pin): string {
+    return "DATA DELETE USERINFO PIN=$pin";
+}
+
+/** Masukkan perintah ke antrean; mesin mengambilnya lewat /iclock/getrequest. */
+function admsAntre(PDO $pdo, string $sn, string $perintah): void {
+    $pdo->prepare('INSERT INTO adms_perintah (sn, perintah) VALUES (?,?)')->execute([$sn, $perintah]);
+}
+
+/**
+ * Petakan PIN mesin ke orang. Urutan: tabel mesin_pin (pemetaan manual),
+ * lalu NIS/NISN siswa, lalu NIP guru.
+ * @return array{tipe:string, nomor_induk:string, nama:string}|null
+ */
+function admsPetakanPin(PDO $pdo, PDO $dc, string $pin): ?array {
+    $st = $pdo->prepare('SELECT tipe, nomor_induk FROM mesin_pin WHERE pin = ?');
+    $st->execute([$pin]);
+    if ($m = $st->fetch()) {
+        $nama = $m['tipe'] === 'guru'
+            ? $dc->prepare('SELECT nama_ptk FROM guru WHERE nip = ?')
+            : $dc->prepare("SELECT nama_siswa FROM siswa WHERE COALESCE(NULLIF(nis,''), nisn) = ?");
+        $nama->execute([$m['nomor_induk']]);
+        return ['tipe' => $m['tipe'], 'nomor_induk' => $m['nomor_induk'], 'nama' => (string)$nama->fetchColumn()];
+    }
+
+    // Siswa: PIN dicocokkan ke NIS atau NISN, termasuk versi tanpa nol di depan
+    // (mesin kerap membuang nol awal). Nomor induk mengikuti aturan dcSiswaList()
+    // supaya cocok dengan isi absensi_siswa.nis.
+    $norm = admsPinNormal($pin);
+    $st = $dc->prepare("SELECT COALESCE(NULLIF(nis,''), nisn) AS induk, nama_siswa AS nama
+                        FROM siswa
+                        WHERE (nis = ? OR nisn = ?
+                               OR TRIM(LEADING '0' FROM COALESCE(NULLIF(nis,''), nisn)) = ?)
+                          AND is_aktif = 1 AND status_siswa = 'Aktif'
+                        LIMIT 1");
+    $st->execute([$pin, $pin, $norm]);
+    if ($s = $st->fetch()) return ['tipe' => 'siswa', 'nomor_induk' => $s['induk'], 'nama' => $s['nama']];
+
+    $st = $dc->prepare("SELECT nip AS induk, nama_ptk AS nama FROM guru
+                        WHERE (nip = ? OR TRIM(LEADING '0' FROM nip) = ?) AND is_aktif = 1 LIMIT 1");
+    $st->execute([$pin, $norm]);
+    if ($g = $st->fetch()) return ['tipe' => 'guru', 'nomor_induk' => $g['induk'], 'nama' => $g['nama']];
+
+    return null;
+}
+
+/**
+ * Tulis satu scan mesin ke tabel absensi sebagai event kode 0/1.
+ *
+ * Aturan:
+ *   - scan masuk paling AWAL pada satu hari yang dipakai; scan pulang paling AKHIR.
+ *   - mesin yang tidak memakai tombol status mengirim semua scan sebagai 0;
+ *     karena itu scan "masuk" yang datang setelah masuk pertama diperlakukan
+ *     sebagai pulang.
+ *   - baris ketidakhadiran manual (kode 2-6) tidak disentuh — konflik dibiarkan
+ *     terlihat oleh admin di halaman Monitor ADMS.
+ *
+ * @return bool true bila menulis ke tabel absensi.
+ */
+function admsTulisAbsensi(PDO $pdo, string $tipe, string $orang, string $waktu, int $statusMesin): bool {
+    $kode = admsKodeEvent($statusMesin);
+    if ($kode === null) return false;
+
+    $tanggal = substr($waktu, 0, 10);
+    $jam     = substr($waktu, 11, 8);
+    [$tabel, $kol] = absTabel($tipe);
+
+    if ($kode === ABS_MASUK) {
+        $st = $pdo->prepare("SELECT jam FROM $tabel WHERE $kol=? AND tanggal=? AND status=?");
+        $st->execute([$orang, $tanggal, ABS_MASUK]);
+        $masukAwal = $st->fetchColumn();
+        // Sudah ada masuk lebih awal -> scan ini berarti pulang
+        if ($masukAwal !== false && $jam > $masukAwal) $kode = ABS_PULANG;
+    }
+
+    // Masuk: ambil jam paling awal. Pulang: ambil jam paling akhir.
+    $pilih = $kode === ABS_MASUK ? 'LEAST' : 'GREATEST';
+    $pdo->prepare("INSERT INTO $tabel ($kol, tanggal, jam, status) VALUES (?,?,?,?)
+                   ON DUPLICATE KEY UPDATE jam = $pilih(jam, VALUES(jam))")
+        ->execute([$orang, $tanggal, $jam, $kode]);
+    return true;
+}
+
+// ============================================================================
 //  Helper catatan absensi (dari database absensi, via $pdo)
 // ----------------------------------------------------------------------------
 //  Kedua tabel diringkas ke bentuk seragam "catatan per hari":
 //     [kunci orang => [tanggal => ['jam_masuk','jam_pulang','status','keterangan']]]
 //  sehingga logika laporan/rekap di bawahnya sama untuk siswa maupun guru.
-//  Kunci orang: NIS (siswa, string) atau guru_id (guru, int dari datacenter).
+//  Kunci orang: NIS (siswa) atau NIP (guru) — keduanya nomor induk dari datacenter.
 // ============================================================================
 
 /** Nama tabel & kolom kunci absensi per tipe. */

@@ -13,7 +13,13 @@ Aplikasi memakai **dua koneksi database** (didefinisikan di `config.php`):
    - jabatan → kolom teks `guru.jabatan`
    - kelas → `rombongan_belajar` (tahun ajaran aktif)
 
-Tabel absensi merujuk data datacenter lewat nomor induk (`absensi_siswa.nis → datacenter_v2.siswa.nis`, `absensi_guru.nip → datacenter_v2.guru.nip`). Jadi data siswa/guru/jabatan/kelas selalu mengikuti datacenter tanpa perlu sinkronisasi.
+Seluruh tabel di database absensi merujuk data datacenter lewat **nomor induk**, bukan id:
+
+- `absensi_siswa.nis` → `datacenter_v2.siswa.nis` (fallback NISN)
+- `absensi_guru.nip` → `datacenter_v2.guru.nip`
+- `jadwal_shift_guru.nip` → `datacenter_v2.guru.nip`
+
+Jadi data siswa/guru/jabatan/kelas selalu mengikuti datacenter tanpa perlu sinkronisasi.
 
 ## Struktur Tabel Absensi (log event)
 
@@ -48,7 +54,95 @@ Status **hadir** dan **terlambat** tidak disimpan di database — keduanya dihit
 
 Pada dashboard, guru berstatus **dinas luar dihitung hadir** (tetap bertugas), sedangkan **cuti tidak**.
 
-Migrasi dari struktur lama ada di `migrasi_absensi_siswa.sql` dan `migrasi_absensi_guru.sql`.
+Migrasi dari struktur lama ada di `migrasi_absensi_siswa.sql`, `migrasi_absensi_guru.sql`, dan `migrasi_jadwal_shift_guru.sql`.
+
+## Endpoint ADMS (Push SDK ZKTeco)
+
+Mesin absensi **menghubungi server** lewat HTTP (bukan server yang menarik data ke port 4370), sehingga mesin di lokasi mana pun bisa mengirim data tanpa VPN atau IP publik di sisi sekolah.
+
+Endpoint ada di folder `iclock/` (satu front controller `iclock/index.php` + `.htaccess`):
+
+| Endpoint | Fungsi |
+|---|---|
+| `GET /iclock/cdata?SN=…&options=all` | handshake, server balas konfigurasi pengiriman |
+| `POST /iclock/cdata?SN=…&table=ATTLOG` | mesin kirim data absensi → dicatat ke tabel absensi |
+| `POST /iclock/cdata?SN=…&table=OPERLOG` | log operasi (diterima, belum diproses) |
+| `GET /iclock/getrequest?SN=…` | mesin ambil perintah dari antrean `adms_perintah` |
+| `POST /iclock/devicecmd?SN=…` | mesin lapor hasil perintah |
+| `GET /iclock/ping` | cek hidup |
+
+### Setelan di mesin
+
+Masuk ke menu **Comm → Cloud Server Setting / ADMS**, isi alamat server dan port (mis. domain `absensi.sekolah.sch.id` port `80`), aktifkan *Enable Domain Name* bila memakai domain. **Aplikasi harus berada di root domain** — sebagian firmware tidak menerima path awalan seperti `/absensi/iclock/…`.
+
+### Cara data mesin masuk ke laporan
+
+1. PIN pada mesin dipetakan ke orang: tabel `mesin_pin` dulu (pemetaan manual), lalu NIS/NISN siswa, lalu NIP guru.
+2. Punch state mesin (0=check-in, 1=check-out, 4/5=overtime) menjadi event kode 0/1. State lain (break-in/out) hanya disimpan mentah agar tidak tertukar dengan kode aplikasi 2–6.
+3. Scan masuk paling **awal** dan scan pulang paling **akhir** pada satu hari yang dipakai. Mesin yang tidak memakai tombol status mengirim semua scan sebagai 0 — scan kedua dan seterusnya otomatis dianggap pulang.
+4. Semua kiriman disimpan mentah di `adms_scan` sebagai jejak audit, jadi bisa diproses ulang bila pemetaan PIN diperbaiki.
+
+Pantau lewat menu **Setting Absensi → Monitor ADMS**: status online mesin, data scan per tanggal, PIN yang tidak dikenal (dengan tombol *Proses Ulang*), dan riwayat komunikasi mesin.
+
+### Upload data guru/siswa ke mesin
+
+Menu **Setting Absensi → Mesin Absensi & Upload** mengirim data memakai konsep ADMS: aplikasi **tidak** menghubungi mesin. Setiap orang diubah menjadi perintah `DATA UPDATE USERINFO` di tabel `adms_perintah`, lalu mesin mengambilnya sendiri lewat `/iclock/getrequest` dan melapor hasilnya lewat `/iclock/devicecmd`.
+
+Alurnya: **Antre** (menunggu diambil mesin) → **Terkirim** (sudah diambil) → **Selesai** (mesin melapor berhasil). Statusnya terlihat di panel *Antrean Perintah ADMS*, lengkap dengan tombol membatalkan perintah yang belum diambil.
+
+PIN dialokasikan otomatis dan disimpan di `mesin_pin` supaya scan yang kembali bisa dipetakan:
+
+- Nomor induk dipakai apa adanya bila muat (maksimal 9 digit angka). NIS `000181` menjadi PIN `181` — nol di depan dibuang karena mesin biasanya membuangnya juga.
+- NIP 18 digit tidak muat, jadi diberi PIN dari blok **900001** ke atas.
+- PIN yang sudah dialokasikan untuk seseorang tidak pernah berubah, jadi upload ulang aman.
+
+Mesin tujuan **wajib punya serial number** — itulah identitas mesin di ADMS.
+
+### Cek koneksi mesin
+
+Tombol cek pada daftar mesin mengirim perintah `CHECK` lewat antrean ADMS, lalu mesin mengambil dan melaporkannya. Kolom **Koneksi** menandai mesin yang menghubungi server dalam 5 menit terakhir (`last_online` diperbarui otomatis setiap mesin memanggil endpoint `/iclock/…`).
+
+Cara ini menggantikan pengecekan soket TCP ke port 4370: pada ADMS mesin yang menghubungi server, sehingga mesin di balik NAT tidak bisa dijangkau dari sisi server walaupun kondisinya sehat.
+
+Karena itu **alamat IP dan port mesin tidak lagi disimpan** — mesin dikenali sepenuhnya lewat serial number. Kolom `ip` dan `port` dihapus lewat `migrasi_hapus_ip_mesin.sql`.
+
+### Catatan penting
+
+- **NIP 18 digit tidak muat** di PIN mesin ZKTeco (umumnya maksimal 9–14 digit). Untuk guru, daftarkan PIN pendek di tabel `mesin_pin` yang menunjuk ke NIP. NIS siswa yang pendek bisa dipakai langsung sebagai PIN.
+- Mesin menghapus data lokalnya setelah menerima balasan `OK`. Karena itu, data dari SN yang belum terdaftar **tetap disimpan** (ditandai di Monitor ADMS) agar tidak hilang. Untuk menolak mesin asing, ubah `ADMS_SN_KETAT` menjadi `true` di `config.php`.
+- Protokol ADMS berjalan di HTTP polos tanpa autentikasi selain serial number — jangan ekspos ke internet tanpa pembatasan IP di firewall/reverse proxy.
+- Bila pada satu tanggal sudah ada catatan manual sakit/ijin/dinas luar/cuti, status itu tetap dipakai di laporan meskipun ada scan masuk. Scan-nya tetap terlihat di Monitor ADMS untuk dikoreksi admin.
+
+Tabel pendukung dibuat lewat `adms.sql`.
+
+## Memindahkan ke Server Lain (Virtualmin, cPanel, VPS)
+
+Aplikasi dirancang agar pindah server tidak perlu menyunting kode. Tidak ada jalur folder, alamat IP, maupun nama domain yang ditulis di dalam kode PHP.
+
+**Langkah pindah:**
+
+1. Salin seluruh folder aplikasi (`vendor/` sudah ikut, jadi tidak perlu menjalankan `composer install`).
+2. Import `database.sql` dan `adms.sql` ke database di server baru. Pastikan database datacenter juga tersedia.
+3. Salin `config.local.example.php` menjadi **`config.local.php`**, isi kredensial database server tersebut.
+4. Buka menu **Setting Absensi → Mesin Absensi & Upload**. Di bagian atas ada kotak **Alamat Server untuk Mesin Absensi** yang terisi otomatis sesuai server yang sedang dibuka.
+5. Salin alamat itu ke menu **Comm → Cloud Server Setting / ADMS** pada mesin.
+
+Hanya langkah 3 yang perlu diketik manual; sisanya menyesuaikan sendiri.
+
+**Kenapa portabel:**
+
+- Kredensial database dibaca berurutan dari `config.local.php` → variabel lingkungan → nilai bawaan. Berkas `config.local.php` diabaikan git sehingga setelan tiap server tidak saling menimpa saat kode diperbarui.
+- Alamat ADMS dideteksi dari permintaan yang sedang berjalan, sehingga otomatis benar baik saat aplikasi berada di akar domain (`https://absensi.sekolah.sch.id/adms/index.php`), di dalam subfolder (`http://server/absensi/adms/index.php`), maupun diakses lewat IP. Status HTTPS juga terbaca sendiri.
+- Endpoint utama `/adms/index.php` adalah berkas nyata, jadi **berfungsi di Apache maupun nginx tanpa aturan rewrite apa pun**. Inilah alamat yang sebaiknya dipakai saat berpindah-pindah server.
+
+**Konfigurasi web server (opsional).** Jalur `/adms/index.php` tidak memerlukan apa-apa. Jalur alternatif `/iclock/...` butuh pengalihan: di Apache sudah disertakan `iclock/.htaccess`, sedangkan di nginx tambahkan blok berikut sebelum `location /`:
+
+```nginx
+location /iclock { try_files $uri /iclock/index.php$is_args$args; }
+location /adms   { try_files $uri /adms/index.php$is_args$args; }
+```
+
+**Catatan HTTPS.** Sebagian firmware mesin hanya mau berbicara HTTPS dan tidak punya opsi untuk mematikannya. Di hosting seperti Virtualmin hal ini justru menguntungkan karena sertifikat Let's Encrypt tersedia otomatis — cukup isikan alamat `https://...` ke mesin.
 
 ## Cara Menjalankan
 

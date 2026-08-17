@@ -9,38 +9,62 @@ $ta = tahunAjaranAktif($dc);
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $act = $_POST['act'] ?? '';
     if ($act === 'add') {
-        $stmt = $pdo->prepare('INSERT INTO mesin_absensi (nama, ip, port, serial_number, tipe, lokasi, aktif) VALUES (?,?,?,?,?,?,?)');
-        $stmt->execute([$_POST['nama'], $_POST['ip'], (int)$_POST['port'], ($_POST['serial_number'] ?? '') ?: null, $_POST['tipe'], $_POST['lokasi'], isset($_POST['aktif']) ? 1 : 0]);
+        $stmt = $pdo->prepare('INSERT INTO mesin_absensi (nama, serial_number, tipe, lokasi, aktif) VALUES (?,?,?,?,?)');
+        $stmt->execute([$_POST['nama'], ($_POST['serial_number'] ?? '') ?: null, $_POST['tipe'], $_POST['lokasi'], isset($_POST['aktif']) ? 1 : 0]);
         $msg = 'Mesin absensi berhasil ditambahkan.';
     } elseif ($act === 'edit') {
-        $stmt = $pdo->prepare('UPDATE mesin_absensi SET nama=?, ip=?, port=?, serial_number=?, tipe=?, lokasi=?, aktif=? WHERE id=?');
-        $stmt->execute([$_POST['nama'], $_POST['ip'], (int)$_POST['port'], ($_POST['serial_number'] ?? '') ?: null, $_POST['tipe'], $_POST['lokasi'], isset($_POST['aktif']) ? 1 : 0, (int)$_POST['id']]);
+        $stmt = $pdo->prepare('UPDATE mesin_absensi SET nama=?, serial_number=?, tipe=?, lokasi=?, aktif=? WHERE id=?');
+        $stmt->execute([$_POST['nama'], ($_POST['serial_number'] ?? '') ?: null, $_POST['tipe'], $_POST['lokasi'], isset($_POST['aktif']) ? 1 : 0, (int)$_POST['id']]);
         $msg = 'Mesin absensi berhasil diperbarui.';
     } elseif ($act === 'delete') {
         $pdo->prepare('DELETE FROM upload_log WHERE mesin_id=?')->execute([(int)$_POST['id']]);
         $pdo->prepare('DELETE FROM mesin_absensi WHERE id=?')->execute([(int)$_POST['id']]);
         $msg = 'Mesin absensi dihapus.';
     } elseif ($act === 'cek') {
-        // Cek koneksi NYATA: coba buka soket TCP ke ip:port mesin. Jika terjangkau -> catat waktu online.
+        // Cek lewat ADMS: kirim perintah CHECK ke antrean. Mesin mengambilnya saat
+        // menghubungi server, lalu melapor hasilnya lewat /iclock/devicecmd.
+        // Cara ini menggantikan soket TCP ke port 4370 yang tidak jalan bila mesin
+        // berada di balik NAT — pada ADMS mesin yang menghubungi server, bukan sebaliknya.
         $id = (int)$_POST['id'];
         $m = $pdo->prepare('SELECT * FROM mesin_absensi WHERE id=?');
         $m->execute([$id]);
         $m = $m->fetch();
         if (!$m) {
             $err = 'Mesin tidak ditemukan.';
+        } elseif (empty($m['serial_number'])) {
+            $err = "Serial number mesin \"{$m['nama']}\" belum diisi. ADMS mengenali mesin lewat serial number — isi dulu lewat tombol Edit.";
         } else {
-            $fp = @fsockopen($m['ip'], (int)$m['port'], $errno, $errstr, 2); // timeout 2 detik
-            if ($fp) {
-                fclose($fp);
-                $pdo->prepare('UPDATE mesin_absensi SET last_online=NOW() WHERE id=?')->execute([$id]);
-                $msg = "Mesin \"{$m['nama']}\" ONLINE ({$m['ip']}:{$m['port']}). Waktu online dicatat: " . date('d-m-Y H:i:s') . ".";
+            $sn = $m['serial_number'];
+            // Sisakan satu CHECK yang menunggu, supaya klik berulang tidak menumpuk antrean.
+            $pdo->prepare("DELETE FROM adms_perintah WHERE sn=? AND status='antre' AND perintah='CHECK'")->execute([$sn]);
+            admsAntre($pdo, $sn, 'CHECK');
+
+            $selisih = $m['last_online'] ? time() - strtotime($m['last_online']) : null;
+            if ($selisih !== null && $selisih < 300) {
+                $msg = "Perintah CHECK dikirim ke antrean mesin \"{$m['nama']}\" (SN {$sn}). "
+                     . 'Mesin terakhir menghubungi server ' . ($selisih < 60 ? 'kurang dari 1 menit' : floor($selisih / 60) . ' menit') . ' yang lalu, '
+                     . 'jadi perintah akan segera diambil. Pantau statusnya di panel Antrean Perintah ADMS.';
+            } elseif ($selisih !== null) {
+                $err = "Perintah CHECK sudah diantrekan, tapi mesin \"{$m['nama']}\" belum menghubungi server sejak "
+                     . date('d-m-Y H:i:s', strtotime($m['last_online'])) . ' (' . floor($selisih / 60) . ' menit lalu). '
+                     . 'Kemungkinan mesin mati atau setelan Cloud Server / ADMS-nya belum benar.';
             } else {
-                $err = "Mesin \"{$m['nama']}\" tidak dapat dijangkau ({$m['ip']}:{$m['port']}) — offline" . ($errstr ? " ($errstr)" : '') . ".";
+                $err = "Perintah CHECK sudah diantrekan, tapi mesin \"{$m['nama']}\" belum pernah menghubungi server sama sekali. "
+                     . 'Periksa menu Comm → Cloud Server Setting / ADMS di mesin: alamat server, port, dan serial number harus cocok.';
             }
         }
+    } elseif ($act === 'batal_antre') {
+        // Buang perintah yang belum sempat diambil mesin.
+        $sn = trim($_POST['sn'] ?? '');
+        $n = $pdo->prepare("DELETE FROM adms_perintah WHERE sn=? AND status='antre'");
+        $n->execute([$sn]);
+        $msg = $n->rowCount() . ' perintah yang masih antre dibatalkan.';
+
     } elseif ($act === 'upload') {
-        // Upload terpisah: pilih mesin + jenis data (per tingkat kelas / per rombel / per jabatan).
-        // Jumlah data dihitung dari datacenter; PIN mesin memakai NIS/NIP (simulasi -> dicatat di riwayat).
+        // Upload lewat ADMS: data TIDAK dikirim langsung ke mesin. Setiap orang
+        // dijadikan perintah "DATA UPDATE USERINFO" di tabel adms_perintah, lalu
+        // mesin mengambilnya sendiri saat memanggil /iclock/getrequest.
+        // PIN dialokasikan & dicatat di mesin_pin supaya scan balik bisa dipetakan.
         $mesinId = (int)($_POST['mesin_id'] ?? 0);
         $mesin = $pdo->prepare('SELECT * FROM mesin_absensi WHERE id=?');
         $mesin->execute([$mesinId]);
@@ -50,50 +74,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $err = 'Mesin tujuan tidak ditemukan.';
         } elseif (!$mesin['aktif']) {
             $err = 'Mesin tidak aktif — aktifkan dulu sebelum upload.';
+        } elseif (empty($mesin['serial_number'])) {
+            $err = "Serial number mesin \"{$mesin['nama']}\" belum diisi. ADMS mengenali mesin lewat serial number — isi dulu lewat tombol Edit.";
         } else {
-            $jg = 0; $js = 0; $ket = '';
             try {
+                $orang = [];   // tiap item: ['tipe', 'induk', 'nama']
+                $ket = '';
                 if ($scope === 'tingkat') {
                     if (!$ta) throw new RuntimeException('Tidak ada tahun ajaran aktif di datacenter.');
                     $tingkat = (int)($_POST['tingkat'] ?? 0);
                     if (!$tingkat) throw new RuntimeException('Tingkat kelas belum dipilih.');
-                    $q = $dc->prepare("SELECT COUNT(*) FROM siswa s
+                    $q = $dc->prepare("SELECT COALESCE(NULLIF(s.nis,''), s.nisn) induk, s.nama_siswa nama
+                        FROM siswa s
                         JOIN siswa_rombel sr ON sr.siswa_id=s.id AND sr.tahun_ajaran_id=?
                         JOIN rombongan_belajar rb ON rb.id=sr.rombongan_belajar_id
-                        WHERE rb.tingkat=? AND s.is_aktif=1 AND s.status_siswa='Aktif'");
+                        WHERE rb.tingkat=? AND s.is_aktif=1 AND s.status_siswa='Aktif'
+                        ORDER BY s.nama_siswa");
                     $q->execute([$ta['id'], $tingkat]);
-                    $js = (int)$q->fetchColumn();
+                    foreach ($q as $r) $orang[] = ['tipe'=>'siswa'] + $r;
                     $ket = "Siswa Per Tingkat Kelas: Tingkat $tingkat";
                 } elseif ($scope === 'rombel') {
                     if (!$ta) throw new RuntimeException('Tidak ada tahun ajaran aktif di datacenter.');
                     $rid = (int)($_POST['rombel_id'] ?? 0);
                     $rb = $rid ? dcKelas($dc, (int)$ta['id'], $rid) : null;
                     if (!$rb) throw new RuntimeException('Rombel belum dipilih / tidak valid.');
-                    $q = $dc->prepare("SELECT COUNT(*) FROM siswa s
-                        JOIN siswa_rombel sr ON sr.siswa_id=s.id AND sr.tahun_ajaran_id=?
-                        WHERE sr.rombongan_belajar_id=? AND s.is_aktif=1 AND s.status_siswa='Aktif'");
-                    $q->execute([$ta['id'], $rid]);
-                    $js = (int)$q->fetchColumn();
+                    foreach (dcSiswaList($dc, (int)$ta['id'], $rid) as $s) {
+                        $orang[] = ['tipe'=>'siswa', 'induk'=>$s['nis'], 'nama'=>$s['nama']];
+                    }
                     $ket = "Siswa Per Rombel: " . $rb['nama'];
                 } elseif ($scope === 'jabatan') {
                     $jab = trim($_POST['jabatan'] ?? '');
                     if ($jab === '') throw new RuntimeException('Jabatan belum dipilih.');
-                    $q = $dc->prepare("SELECT COUNT(*) FROM guru WHERE is_aktif=1 AND COALESCE(NULLIF(TRIM(jabatan),''),'Guru')=?");
-                    $q->execute([$jab]);
-                    $jg = (int)$q->fetchColumn();
+                    foreach (dcGuruList($dc, $jab) as $g) {
+                        $orang[] = ['tipe'=>'guru', 'induk'=>$g['nip'], 'nama'=>$g['nama']];
+                    }
                     $ket = "Guru Per Jabatan: $jab";
                 } else {
                     throw new RuntimeException('Jenis data upload tidak valid.');
                 }
-                if ($jg + $js === 0) {
+
+                if (!$orang) {
                     $err = "Tidak ada data untuk diupload ($ket).";
                 } else {
+                    $sn = $mesin['serial_number'];
+                    $jg = 0; $js = 0; $contohPin = [];
+                    $pdo->beginTransaction();
+                    foreach ($orang as $o) {
+                        if (($o['induk'] ?? '') === '') continue;   // tanpa nomor induk tidak bisa dipetakan
+                        $pin = admsAlokasiPin($pdo, $o['tipe'], $o['induk']);
+                        admsAntre($pdo, $sn, admsPerintahUser($pin, $o['nama']));
+                        if ($o['tipe'] === 'guru') $jg++; else $js++;
+                        if (count($contohPin) < 3) $contohPin[] = $o['nama'] . ' → PIN ' . $pin;
+                    }
                     $pdo->prepare('INSERT INTO upload_log (mesin_id, jumlah_guru, jumlah_siswa, keterangan) VALUES (?,?,?,?)')
                         ->execute([$mesinId, $jg, $js, $ket]);
+                    $pdo->commit();
+
+                    $jml = $jg + $js;
                     $rincian = $scope === 'jabatan' ? "$jg guru" : "$js siswa";
-                    $msg = "Berhasil upload $rincian ($ket) ke mesin \"{$mesin['nama']}\" ({$mesin['ip']}:{$mesin['port']}).";
+                    $onlineBaru = $mesin['last_online'] && (time() - strtotime($mesin['last_online']) < 300);
+                    $msg = "$jml perintah pendaftaran user ($rincian — $ket) masuk antrean untuk mesin \"{$mesin['nama']}\" (SN {$sn}). "
+                         . "Mesin akan mengambilnya sendiri saat menghubungi server. Contoh: " . implode(', ', $contohPin) . '.'
+                         . ($onlineBaru ? '' : ' Catatan: mesin ini belum menghubungi server dalam 5 menit terakhir, jadi antrean baru terkirim setelah mesin online.');
                 }
             } catch (Throwable $ex) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
                 $err = 'Upload gagal: ' . $ex->getMessage();
             }
         }
@@ -103,6 +148,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $mesinList   = $pdo->query('SELECT * FROM mesin_absensi ORDER BY id')->fetchAll();
 $activeMesin = array_values(array_filter($mesinList, fn($m) => $m['aktif']));
 $logs        = $pdo->query('SELECT l.*, m.nama FROM upload_log l JOIN mesin_absensi m ON m.id=l.mesin_id ORDER BY l.waktu DESC LIMIT 10')->fetchAll();
+// Ringkasan antrean perintah ADMS per serial number
+$antrean = [];
+foreach ($pdo->query("SELECT sn, status, COUNT(*) c, MAX(dikirim) terakhir
+                      FROM adms_perintah GROUP BY sn, status") as $r) {
+    $antrean[$r['sn']][$r['status']] = ['c' => (int)$r['c'], 'terakhir' => $r['terakhir']];
+}
 $tingkatList = $ta ? dcTingkatList($dc, (int)$ta['id']) : [];
 $rombelList  = $ta ? dcKelasList($dc, (int)$ta['id']) : [];
 $jabatanList = dcJabatanList($dc);
@@ -112,6 +163,54 @@ require_once __DIR__ . '/includes/header.php';
 <?php if ($msg): ?><div class="alert alert-success"><?= e($msg) ?></div><?php endif; ?>
 <?php if ($err): ?><div class="alert alert-danger"><?= e($err) ?></div><?php endif; ?>
 
+<!-- ============ Alamat untuk Mesin (terdeteksi otomatis) ============ -->
+<?php
+$urlAdms = urlAdms();
+// Alamat lewat IP server berguna bila mesin tidak bisa menerjemahkan nama domain
+$ipServer = $_SERVER['SERVER_ADDR'] ?? '';
+$urlAdmsIp = '';
+if ($ipServer && !filter_var($_SERVER['HTTP_HOST'] ?? '', FILTER_VALIDATE_IP)) {
+    $urlAdmsIp = preg_replace('#://[^/]+#', '://' . $ipServer, $urlAdms);
+}
+?>
+<div class="card card-stat mb-4">
+  <div class="card-header bg-white fw-semibold"><i class="bi bi-link-45deg me-1"></i>Alamat Server untuk Mesin Absensi</div>
+  <div class="card-body">
+    <p class="text-muted small mb-2">
+      Isikan alamat ini ke menu <b>Comm &rarr; Cloud Server Setting / ADMS</b> di mesin.
+      Alamat terdeteksi otomatis dari server yang sedang Anda buka, jadi setelah aplikasi
+      dipindah ke server lain cukup buka halaman ini lagi dan salin alamat yang baru.
+    </p>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Alamat</span>
+      <input class="form-control font-monospace" id="url_adms" value="<?= e($urlAdms) ?>" readonly>
+      <button class="btn btn-outline-secondary" type="button" onclick="salinUrl('url_adms', this)">Salin</button>
+    </div>
+    <?php if ($urlAdmsIp): ?>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Lewat IP</span>
+      <input class="form-control font-monospace" id="url_adms_ip" value="<?= e($urlAdmsIp) ?>" readonly>
+      <button class="btn btn-outline-secondary" type="button" onclick="salinUrl('url_adms_ip', this)">Salin</button>
+    </div>
+    <div class="text-muted small mb-2">Pakai alamat IP bila mesin tidak dapat menerjemahkan nama domain.</div>
+    <?php endif; ?>
+    <div class="small">
+      <span class="badge bg-<?= str_starts_with($urlAdms, 'https') ? 'success' : 'secondary' ?>">
+        <?= str_starts_with($urlAdms, 'https') ? 'HTTPS aktif' : 'HTTP biasa' ?>
+      </span>
+      <span class="text-muted ms-2">
+        Port: <?= e($_SERVER['SERVER_PORT'] ?? '80') ?> &middot;
+        Server: <?= e(strtok($_SERVER['SERVER_SOFTWARE'] ?? '-', ' ')) ?> &middot;
+        Zona waktu: <?= e(date_default_timezone_get()) ?>
+      </span>
+    </div>
+    <div class="text-muted small mt-2">
+      Sebagian firmware hanya menerima alamat tanpa skema — dalam hal itu isi bagian setelah
+      <code>://</code> saja, dan pastikan port diisi terpisah.
+    </div>
+  </div>
+</div>
+
 <!-- ============ Daftar Mesin ============ -->
 <div class="card card-stat mb-4">
   <div class="card-header bg-white d-flex justify-content-between align-items-center">
@@ -120,21 +219,23 @@ require_once __DIR__ . '/includes/header.php';
   </div>
   <div class="card-body table-responsive">
     <table class="table table-hover align-middle">
-      <thead><tr><th>Nama</th><th>IP:Port</th><th>Serial Number</th><th>Tipe</th><th>Lokasi</th><th>Status</th><th>Waktu Online Terakhir</th><th style="width:150px">Aksi</th></tr></thead>
+      <thead><tr><th>Nama</th><th>Serial Number</th><th>Tipe</th><th>Lokasi</th><th>Aktif</th><th>Kontak Terakhir</th><th>Koneksi</th><th style="width:150px">Aksi</th></tr></thead>
       <tbody>
-      <?php foreach ($mesinList as $m): ?>
+      <?php foreach ($mesinList as $m):
+        // Pada ADMS, mesin dianggap tersambung bila menghubungi server dalam 5 menit terakhir.
+        $online = $m['last_online'] && (time() - strtotime($m['last_online']) < 300); ?>
         <tr>
           <td><?= e($m['nama']) ?></td>
-          <td><?= e($m['ip']) ?>:<?= e($m['port']) ?></td>
-          <td><?= $m['serial_number'] ? '<code>' . e($m['serial_number']) . '</code>' : '<span class="text-muted">-</span>' ?></td>
+          <td><?= $m['serial_number'] ? '<code>' . e($m['serial_number']) . '</code>' : '<span class="text-danger small">belum diisi</span>' ?></td>
           <td><?= e($m['tipe']) ?></td>
           <td><?= e($m['lokasi']) ?></td>
           <td><?= $m['aktif'] ? '<span class="badge bg-success">Aktif</span>' : '<span class="badge bg-secondary">Nonaktif</span>' ?></td>
           <td><?= $m['last_online'] ? e(date('d-m-Y H:i:s', strtotime($m['last_online']))) : '<span class="text-muted">Belum pernah</span>' ?></td>
+          <td><?= $online ? '<span class="badge bg-success">Tersambung</span>' : '<span class="badge bg-secondary">Tidak ada kabar</span>' ?></td>
           <td>
             <form method="post" class="d-inline">
               <input type="hidden" name="act" value="cek"><input type="hidden" name="id" value="<?= $m['id'] ?>">
-              <button class="btn btn-sm btn-outline-primary" title="Cek koneksi mesin (TCP ke IP:port)"><i class="bi bi-wifi"></i></button>
+              <button class="btn btn-sm btn-outline-primary" title="Kirim perintah CHECK lewat ADMS"><i class="bi bi-broadcast"></i></button>
             </form>
             <button class="btn btn-sm btn-warning" onclick='editMesin(<?= json_encode($m, JSON_HEX_APOS | JSON_HEX_QUOT) ?>)'><i class="bi bi-pencil"></i></button>
             <form method="post" class="d-inline" onsubmit="return confirm('Hapus mesin ini?')">
@@ -147,6 +248,11 @@ require_once __DIR__ . '/includes/header.php';
       <?php if (!$mesinList): ?><tr><td colspan="8" class="text-muted">Belum ada mesin absensi.</td></tr><?php endif; ?>
       </tbody>
     </table>
+    <div class="text-muted small">
+      <i class="bi bi-broadcast me-1"></i>Tombol cek mengirim perintah <code>CHECK</code> lewat antrean ADMS — mesin mengambilnya
+      saat menghubungi server, lalu melapor hasilnya. Kolom <b>Koneksi</b> menandai mesin yang menghubungi server dalam 5 menit terakhir.
+      Mesin dikenali lewat <b>serial number</b>; alamat IP mesin tidak diperlukan karena pada ADMS mesin yang menghubungi server.
+    </div>
   </div>
 </div>
 
@@ -157,13 +263,13 @@ require_once __DIR__ . '/includes/header.php';
     <?php if (!$activeMesin): ?>
       <div class="text-muted">Belum ada mesin <b>aktif</b>. Tambahkan atau aktifkan mesin terlebih dahulu.</div>
     <?php else: ?>
-    <form method="post" class="row g-3" onsubmit="return confirm('Upload data terpilih ke mesin ini?')">
+    <form method="post" class="row g-3" onsubmit="return confirm('Masukkan data terpilih ke antrean perintah mesin ini?')">
       <input type="hidden" name="act" value="upload">
       <div class="col-md-4">
         <label class="form-label">Mesin Tujuan</label>
         <select class="form-select" name="mesin_id" required>
           <?php foreach ($activeMesin as $m): ?>
-            <option value="<?= $m['id'] ?>"><?= e($m['nama']) ?> — <?= e($m['ip']) ?><?= $m['serial_number'] ? ' (' . e($m['serial_number']) . ')' : '' ?></option>
+            <option value="<?= $m['id'] ?>"><?= e($m['nama']) ?><?= $m['serial_number'] ? ' — SN ' . e($m['serial_number']) : ' — SN belum diisi' ?></option>
           <?php endforeach; ?>
         </select>
       </div>
@@ -197,17 +303,57 @@ require_once __DIR__ . '/includes/header.php';
         </div>
       </div>
       <div class="col-12 d-flex align-items-center flex-wrap gap-2">
-        <button class="btn btn-success"><i class="bi bi-upload me-1"></i>Upload ke Mesin</button>
-        <span class="text-muted small">PIN mesin memakai NIS/NIP. Sumber data: datacenter (TA <?= e($ta['nama_tahun_ajaran'] ?? '-') ?>). Simulasi — dicatat di riwayat.</span>
+        <button class="btn btn-success"><i class="bi bi-upload me-1"></i>Kirim ke Antrean Mesin</button>
+        <span class="text-muted small">
+          Sumber data: datacenter (TA <?= e($ta['nama_tahun_ajaran'] ?? '-') ?>).
+          Data dikirim lewat <b>ADMS</b>: tiap orang menjadi perintah <code>DATA UPDATE USERINFO</code> di antrean,
+          lalu mesin mengambilnya sendiri. PIN memakai nomor induk bila muat (maks 9 digit angka);
+          NIP yang terlalu panjang diberi PIN dari blok 900001 dan dicatat di <code>mesin_pin</code>.
+        </span>
       </div>
     </form>
     <?php endif; ?>
   </div>
 </div>
 
+<!-- ============ Antrean Perintah ADMS ============ -->
+<div class="card card-stat mb-4">
+  <div class="card-header bg-white fw-semibold"><i class="bi bi-list-check me-1"></i>Antrean Perintah ADMS</div>
+  <div class="card-body table-responsive">
+    <table class="table table-sm align-middle mb-2">
+      <thead><tr><th>Mesin</th><th>Serial Number</th><th class="text-end">Antre</th><th class="text-end">Terkirim</th><th class="text-end">Selesai</th><th>Pengiriman Terakhir</th><th style="width:130px"></th></tr></thead>
+      <tbody>
+      <?php foreach ($mesinList as $m): $sn = $m['serial_number']; $a = $sn ? ($antrean[$sn] ?? []) : []; ?>
+        <tr>
+          <td><?= e($m['nama']) ?></td>
+          <td><?= $sn ? '<code>' . e($sn) . '</code>' : '<span class="text-danger small">belum diisi</span>' ?></td>
+          <td class="text-end"><span class="badge bg-<?= !empty($a['antre']) ? 'warning text-dark' : 'light text-dark border' ?>"><?= (int)($a['antre']['c'] ?? 0) ?></span></td>
+          <td class="text-end"><span class="badge bg-<?= !empty($a['terkirim']) ? 'info' : 'light text-dark border' ?>"><?= (int)($a['terkirim']['c'] ?? 0) ?></span></td>
+          <td class="text-end"><span class="badge bg-<?= !empty($a['selesai']) ? 'success' : 'light text-dark border' ?>"><?= (int)($a['selesai']['c'] ?? 0) ?></span></td>
+          <td><?= e($a['terkirim']['terakhir'] ?? $a['selesai']['terakhir'] ?? '—') ?></td>
+          <td>
+            <?php if (!empty($a['antre'])): ?>
+            <form method="post" onsubmit="return confirm('Batalkan semua perintah yang masih antre untuk mesin ini?')">
+              <input type="hidden" name="act" value="batal_antre"><input type="hidden" name="sn" value="<?= e($sn) ?>">
+              <button class="btn btn-sm btn-outline-danger w-100"><i class="bi bi-x-lg me-1"></i>Batalkan</button>
+            </form>
+            <?php endif; ?>
+          </td>
+        </tr>
+      <?php endforeach; ?>
+      <?php if (!$mesinList): ?><tr><td colspan="7" class="text-muted">Belum ada mesin absensi.</td></tr><?php endif; ?>
+      </tbody>
+    </table>
+    <div class="text-muted small">
+      <b>Antre</b> = menunggu diambil mesin &middot; <b>Terkirim</b> = sudah diambil mesin, menunggu laporan hasil &middot;
+      <b>Selesai</b> = mesin melaporkan perintah sudah dijalankan. Pantau lalu lintasnya di <a href="adms_monitor.php">Monitor ADMS</a>.
+    </div>
+  </div>
+</div>
+
 <!-- ============ Riwayat Upload ============ -->
 <div class="card card-stat">
-  <div class="card-header bg-white fw-semibold">Riwayat Upload Data ke Mesin</div>
+  <div class="card-header bg-white fw-semibold">Riwayat Pengiriman Data ke Mesin</div>
   <div class="card-body table-responsive">
     <table class="table table-sm align-middle">
       <thead><tr><th>Waktu</th><th>Mesin</th><th>Keterangan</th><th class="text-end">Guru</th><th class="text-end">Siswa</th></tr></thead>
@@ -235,11 +381,11 @@ require_once __DIR__ . '/includes/header.php';
       <input type="hidden" name="act" id="f_act" value="add">
       <input type="hidden" name="id" id="f_id">
       <div class="mb-3"><label class="form-label">Nama Mesin</label><input class="form-control" name="nama" id="f_nama" required></div>
-      <div class="row">
-        <div class="col-8 mb-3"><label class="form-label">IP Address</label><input class="form-control" name="ip" id="f_ip" required></div>
-        <div class="col-4 mb-3"><label class="form-label">Port</label><input type="number" class="form-control" name="port" id="f_port" value="4370" required></div>
+      <div class="mb-3">
+        <label class="form-label">Serial Number</label>
+        <input class="form-control" name="serial_number" id="f_serial" placeholder="mis. ZK-A1B2C3D4" required>
+        <div class="form-text">Identitas mesin di ADMS — harus sama persis dengan SN yang tertera di mesin.</div>
       </div>
-      <div class="mb-3"><label class="form-label">Serial Number</label><input class="form-control" name="serial_number" id="f_serial" placeholder="mis. ZK-A1B2C3D4"></div>
       <div class="mb-3"><label class="form-label">Tipe</label><input class="form-control" name="tipe" id="f_tipe" value="Fingerprint"></div>
       <div class="mb-3"><label class="form-label">Lokasi</label><input class="form-control" name="lokasi" id="f_lokasi"></div>
       <div class="form-check"><input type="checkbox" class="form-check-input" name="aktif" id="f_aktif" checked><label class="form-check-label" for="f_aktif">Aktif</label></div>
@@ -249,11 +395,19 @@ require_once __DIR__ . '/includes/header.php';
 </div></div></div>
 
 <script>
+function salinUrl(id, tombol) {
+  const inp = document.getElementById(id);
+  inp.select();
+  navigator.clipboard.writeText(inp.value).then(() => {
+    const semula = tombol.textContent;
+    tombol.textContent = 'Tersalin';
+    setTimeout(() => tombol.textContent = semula, 1500);
+  });
+}
 function resetForm() {
   document.getElementById('modalTitle').textContent = 'Tambah Mesin';
   document.getElementById('f_act').value = 'add';
-  ['f_id','f_nama','f_ip','f_serial','f_lokasi'].forEach(id => document.getElementById(id).value = '');
-  document.getElementById('f_port').value = 4370;
+  ['f_id','f_nama','f_serial','f_lokasi'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('f_tipe').value = 'Fingerprint';
   document.getElementById('f_aktif').checked = true;
 }
@@ -262,8 +416,6 @@ function editMesin(m) {
   document.getElementById('f_act').value = 'edit';
   document.getElementById('f_id').value = m.id;
   document.getElementById('f_nama').value = m.nama;
-  document.getElementById('f_ip').value = m.ip;
-  document.getElementById('f_port').value = m.port;
   document.getElementById('f_serial').value = m.serial_number || '';
   document.getElementById('f_tipe').value = m.tipe;
   document.getElementById('f_lokasi').value = m.lokasi || '';

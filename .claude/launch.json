@@ -4,7 +4,7 @@
     {
       "name": "absensi",
       "runtimeExecutable": "C:\\laragon\\bin\\php\\php-8.3.30-Win32-vs16-x64\\php.exe",
-      "runtimeArgs": ["-S", "127.0.0.1:8090", "-t", "C:\\laragon\\www\\absensi"],
+      "runtimeArgs": ["-S", "127.0.0.1:8090", "-t", "C:\\laragon\\www\\absensi", "C:\\laragon\\www\\absensi\\router.php"],
       "port": 8090
     }
   ]

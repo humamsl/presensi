@@ -14,7 +14,7 @@
 --  Tabel absensi merujuk data milik datacenter:
 --     absensi_siswa.nis          -> datacenter_v2.siswa.nis (fallback nisn)
 --     absensi_guru.nip           -> datacenter_v2.guru.nip
---     jadwal_shift_guru.guru_id  -> datacenter_v2.guru.id
+--     jadwal_shift_guru.nip      -> datacenter_v2.guru.nip
 --  (Tidak ada FOREIGN KEY lintas-database karena master berada di DB lain.)
 -- ============================================================================
 
@@ -41,16 +41,16 @@ CREATE TABLE jadwal_absensi (
   UNIQUE KEY uk_tipe_hari (tipe, hari)
 );
 
+-- Mesin dikenali lewat serial_number (identitasnya di ADMS). Alamat IP tidak
+-- disimpan karena pada ADMS mesin yang menghubungi server, bukan sebaliknya.
 CREATE TABLE mesin_absensi (
   id INT AUTO_INCREMENT PRIMARY KEY,
   nama VARCHAR(100) NOT NULL,
-  ip VARCHAR(50) NOT NULL,
-  port INT NOT NULL DEFAULT 4370,
   serial_number VARCHAR(50) DEFAULT NULL,
   tipe VARCHAR(50) DEFAULT 'Fingerprint',
   lokasi VARCHAR(100) DEFAULT NULL,
   aktif TINYINT(1) NOT NULL DEFAULT 1,
-  last_online DATETIME DEFAULT NULL COMMENT 'waktu terakhir mesin terjangkau (online)'
+  last_online DATETIME DEFAULT NULL COMMENT 'waktu terakhir mesin menghubungi server'
 );
 
 CREATE TABLE upload_log (
@@ -78,13 +78,13 @@ CREATE TABLE shift (
   jam_pulang TIME NOT NULL
 );
 
--- guru_id merujuk datacenter_v2.guru.id (tanpa FK lintas-database)
+-- nip merujuk datacenter_v2.guru.nip (tanpa FK lintas-database)
 CREATE TABLE jadwal_shift_guru (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  guru_id INT NOT NULL COMMENT 'ref datacenter_v2.guru.id',
+  nip VARCHAR(30) NOT NULL COMMENT 'ref datacenter_v2.guru.nip',
   hari TINYINT NOT NULL COMMENT '1=Senin .. 7=Minggu',
   shift_id INT NOT NULL,
-  UNIQUE KEY uk_guru_hari (guru_id, hari),
+  UNIQUE KEY uk_nip_hari (nip, hari),
   FOREIGN KEY (shift_id) REFERENCES shift(id)
 );
 
@@ -143,9 +143,9 @@ INSERT INTO jadwal_absensi (tipe, hari, jam_masuk, batas_terlambat, jam_pulang, 
 ('guru',6,NULL,NULL,NULL,1),
 ('guru',7,NULL,NULL,NULL,1);
 
-INSERT INTO mesin_absensi (nama, ip, port, serial_number, tipe, lokasi, aktif) VALUES
-('Mesin Gerbang Utama','192.168.1.201',4370,'ZK-A1B2C3D4','Fingerprint','Gerbang Utama',1),
-('Mesin Ruang Guru','192.168.1.202',4370,'ZK-E5F6G7H8','Fingerprint + Kartu','Ruang Guru',1);
+INSERT INTO mesin_absensi (nama, serial_number, tipe, lokasi, aktif) VALUES
+('Mesin Gerbang Utama','ZK-A1B2C3D4','Fingerprint','Gerbang Utama',1),
+('Mesin Ruang Guru','ZK-E5F6G7H8','Fingerprint + Kartu','Ruang Guru',1);
 
 INSERT INTO hari_libur (tanggal, tanggal_selesai, keterangan, jenis) VALUES
 ('2026-08-17', NULL, 'Hari Kemerdekaan RI', 'nasional'),

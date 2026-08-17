@@ -11,6 +11,7 @@ $groups = [
     ['Setting Absensi', 'bi-gear', [
         ['setting_jadwal.php', 'bi-clock', 'Jadwal Jam Absensi'],
         ['setting_mesin.php', 'bi-cpu', 'Mesin Absensi & Upload'],
+        ['adms_monitor.php', 'bi-broadcast', 'Monitor ADMS'],
         ['setting_libur.php', 'bi-calendar-x', 'Hari Libur'],
         ['setting_shift.php', 'bi-arrow-repeat', 'Jadwal Shift Guru'],
     ]],

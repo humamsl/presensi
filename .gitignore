@@ -1,1 +1,8 @@
-config.php
+# Pengaturan khusus tiap server — jangan ikut ke repositori
+config.local.php
+
+# Folder sesi cadangan (dipakai bila folder temp sistem tidak bisa ditulis)
+/sessions/
+
+# Catatan: vendor/ SENGAJA ikut di repositori supaya aplikasi langsung jalan
+# di server tujuan tanpa perlu menjalankan "composer install".

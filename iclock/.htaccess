@@ -1,0 +1,7 @@
+# Mesin ADMS memanggil /iclock/cdata, /iclock/getrequest, dst (tanpa .php).
+# Semua diarahkan ke index.php yang memilah berdasarkan nama endpoint.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>

@@ -18,13 +18,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $msg = 'Shift tidak bisa dihapus karena masih dipakai pada jadwal guru.';
         }
     } elseif ($act === 'jadwal_save') {
-        $guruId = (int)$_POST['guru_id'];
-        $del = $pdo->prepare('DELETE FROM jadwal_shift_guru WHERE guru_id=? AND hari=?');
-        $ins = $pdo->prepare('INSERT INTO jadwal_shift_guru (guru_id, hari, shift_id) VALUES (?,?,?)');
+        // Jadwal shift dikunci per NIP, seragam dengan absensi_guru.
+        $nip = trim($_POST['nip'] ?? '');
+        $del = $pdo->prepare('DELETE FROM jadwal_shift_guru WHERE nip=? AND hari=?');
+        $ins = $pdo->prepare('INSERT INTO jadwal_shift_guru (nip, hari, shift_id) VALUES (?,?,?)');
         for ($h = 1; $h <= 7; $h++) {
-            $del->execute([$guruId, $h]);
+            $del->execute([$nip, $h]);
             $shiftId = (int)($_POST['hari'][$h] ?? 0);
-            if ($shiftId) $ins->execute([$guruId, $h, $shiftId]);
+            if ($shiftId) $ins->execute([$nip, $h, $shiftId]);
         }
         $msg = 'Jadwal shift guru berhasil disimpan.';
     }
@@ -33,9 +34,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $shiftList = $pdo->query('SELECT * FROM shift ORDER BY jam_masuk')->fetchAll();
 $guruList = dcGuruList($dc); // daftar guru dibaca langsung dari datacenter
 $jadwal = [];
-foreach ($pdo->query('SELECT * FROM jadwal_shift_guru') as $r) $jadwal[$r['guru_id']][$r['hari']] = $r['shift_id'];
+foreach ($pdo->query('SELECT * FROM jadwal_shift_guru') as $r) $jadwal[$r['nip']][$r['hari']] = $r['shift_id'];
 
-$selGuru = (int)($_GET['guru_id'] ?? ($_POST['guru_id'] ?? ($guruList[0]['id'] ?? 0)));
+$selNip = trim((string)($_GET['nip'] ?? ($_POST['nip'] ?? ($guruList[0]['nip'] ?? ''))));
 
 require_once __DIR__ . '/includes/header.php';
 ?>
@@ -72,16 +73,16 @@ require_once __DIR__ . '/includes/header.php';
       <div class="card-body">
         <form method="get" class="mb-3">
           <label class="form-label">Pilih Guru</label>
-          <select class="form-select" name="guru_id" onchange="this.form.submit()">
+          <select class="form-select" name="nip" onchange="this.form.submit()">
             <?php foreach ($guruList as $g): ?>
-              <option value="<?= $g['id'] ?>" <?= $g['id'] == $selGuru ? 'selected' : '' ?>><?= e($g['nama']) ?> — <?= e($g['jabatan']) ?></option>
+              <option value="<?= e($g['nip']) ?>" <?= $g['nip'] === $selNip ? 'selected' : '' ?>><?= e($g['nama']) ?> — <?= e($g['jabatan']) ?> (<?= e($g['nip']) ?>)</option>
             <?php endforeach; ?>
           </select>
         </form>
-        <?php if ($selGuru): ?>
+        <?php if ($selNip !== ''): ?>
         <form method="post">
           <input type="hidden" name="act" value="jadwal_save">
-          <input type="hidden" name="guru_id" value="<?= $selGuru ?>">
+          <input type="hidden" name="nip" value="<?= e($selNip) ?>">
           <table class="table table-sm align-middle">
             <thead><tr><th>Hari</th><th>Shift</th></tr></thead>
             <tbody>
@@ -92,7 +93,7 @@ require_once __DIR__ . '/includes/header.php';
                   <select class="form-select form-select-sm" name="hari[<?= $h ?>]">
                     <option value="0">— Libur / Tidak ada shift —</option>
                     <?php foreach ($shiftList as $s): ?>
-                      <option value="<?= $s['id'] ?>" <?= ($jadwal[$selGuru][$h] ?? 0) == $s['id'] ? 'selected' : '' ?>>
+                      <option value="<?= $s['id'] ?>" <?= ($jadwal[$selNip][$h] ?? 0) == $s['id'] ? 'selected' : '' ?>>
                         <?= e($s['nama']) ?> (<?= e(substr($s['jam_masuk'],0,5)) ?>–<?= e(substr($s['jam_pulang'],0,5)) ?>)
                       </option>
                     <?php endforeach; ?>
